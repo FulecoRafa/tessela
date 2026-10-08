@@ -1,65 +1,87 @@
-# marathon-spike
+# tessela
 
-Spike da arquitetura "GPUI como Qt, Luau/TSX como QtQuick, serviços por Unix socket".
-A pergunta que ele responde: dá para ter widgets escritos em **Luau ou TSX**, com
-**sandbox de verdade**, alimentados por **serviços em qualquer linguagem**, sem
-que o core precise saber de nenhum deles?
+> Nome provisório ([ADR 0008](docs/adr/0008-nome-provisorio.md)). Licença MIT OR Apache-2.0.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ widgets/*  Luau ou TSX · sandbox · 1 thread + 1 VM cada   │
-├──────────────────────────────────────────────────────────┤
-│ runtime    núcleo reativo em Rust (signals, bindings)     │
-│ view       vocabulário fechado: Row Column Text Icon      │
-│            Pill Button Progress Spacer                    │
-├──────────────────────────────────────────────────────────┤
-│ shell      renderer GPUI (layer-shell) ou terminal        │
-│ connector  dono de todos os sockets · multiplexa · reconecta│
-├────────────────┬─────────────────┬───────────────────────┤
-│ power (Go)     │ sys (Python)    │ <seu>.sock (qualquer)  │
-└────────────────┴─────────────────┴───────────────────────┘
-```
+Framework para apps cuja interface e cujas extensões são escritas em **Luau ou
+TSX**, rodam **em sandbox de verdade**, alcançam o mundo só por **módulos**
+declarados no manifesto e são desenhadas por **renderers trocáveis**: GPUI,
+terminal ou headless hoje; remoto, HTML e outros no roteiro.
+
+O primeiro app construído com ele é a **marathon**, uma shell para desktop
+Linux (`apps/marathon`).
 
 ![barra GPUI em layer-shell, dados ao vivo dos serviços Go e Python](docs/gpui-bar.png)
-![widgets que tentaram escapar do sandbox viram ⚠ sem derrubar o resto](docs/gpui-sandbox.png)
 
-Capturas reais: sway headless + lavapipe, clique enviado por um ponteiro virtual
-(perfil → "desempenho" passou por TSX → conector → serviço Go → re-render).
-Build release sem GPUI: binário de 9 MB, ~11 MB de RSS com 4 widgets (2 Luau, 2 QuickJS).
+- Arquitetura e roteiro: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Decisões: [`docs/adr/`](docs/adr/)
+- Benchmark contra o Quickshell: [`bench/`](bench/)
 
-## Rodando
+## Estrutura
+
+```
+crates/
+  tessela          fachada: re-exporta tudo atrás de features
+  tessela-core     grafo reativo, Instance, traits Engine e Module (sem I/O)
+  tessela-view     vocabulário de UI (Row, Column, Text, Icon, Pill, Button, Progress, Spacer)
+  tessela-host     manifestos, threads, hot reload, trait Renderer, renderer Headless
+  tessela-luau     engine Luau            (feature luau)
+  tessela-quickjs  engine JS/TSX          (feature quickjs)
+  tessela-unix     módulo de serviços     (feature unix)
+  tessela-tui      renderer de terminal   (feature tui)
+  tessela-gpui     renderer GPUI          (feature gpui)
+  tessela-proto    protocolo dos serviços
+apps/marathon      a shell
+sdk/{go,python}    helpers para escrever serviços
+services/          serviços de exemplo (power em Go, sys em Python)
+widgets/           widgets da marathon (Luau e TSX)
+```
+
+## Montando um app
+
+```rust
+use tessela::host::{App, Headless};
+use tessela::unix::UnixServices;
+
+App::builder()
+    .engines(tessela::engines())                       // luau + quickjs, conforme as features
+    .module(UnixServices::new(["/run/user/1000/marathon/services"]))
+    .extension("widgets/clock")
+    .extension("widgets/battery")
+    .build()?
+    .run(Headless::new())                              // ou Tui, ou gpui::LayerBar
+```
+
+## Rodando a marathon
 
 ```sh
 ./demo.sh                      # barra no terminal (←/→ foco, enter clica, ↑/↓ scroll, mouse funciona)
 ./demo.sh --headless --seconds 8 --click profile@3
-./demo.sh --gpui               # barra GPUI em layer-shell (Wayland; ver abaixo)
+./demo.sh --gpui               # barra GPUI em layer-shell (Wayland)
 ./check.sh                     # testes + e2e sem display
 ```
 
 Precisa de Rust, Go e Python 3. Edite qualquer arquivo em `widgets/` com a barra
-aberta: o widget recarrega sozinho, sem perder as assinaturas dos outros.
+aberta: o widget recarrega sozinho. Para o GPUI no CachyOS:
+`sudo pacman -S wayland libxkbcommon vulkan-icd-loader` e um compositor com
+`zwlr_layer_shell_v1` (niri, sway, river, KWin, Hyprland, Wayfire).
 
-Para o renderer GPUI no CachyOS: `sudo pacman -S wayland libxkbcommon vulkan-icd-loader`
-e um compositor com `zwlr_layer_shell_v1` (niri, sway, river, KWin, Hyprland, Wayfire).
+## Escrevendo uma extensão
 
-## Escrevendo um widget
-
-Cada widget é uma pasta com `widget.toml` e um arquivo de entrada:
+Cada extensão é uma pasta com `widget.toml` e um arquivo de entrada:
 
 ```toml
 name = "battery"
-entry = "battery.luau"      # .luau/.lua ou .tsx/.ts/.jsx/.js
-uses = ["power"]            # serviços que o widget pode usar; o resto é negado
-memory_mb = 16              # padrão 16
-budget_ms = 50              # tempo de CPU por entrada no guest; padrão 50
+entry = "battery.luau"              # .luau/.lua ou .tsx/.ts/.jsx/.js
+capabilities = ["service:power"]    # tudo que não está aqui é negado
+memory_mb = 16                      # padrão 16
+budget_ms = 50                      # CPU por entrada no guest; padrão 50
 ```
 
 Os dois estilos de reatividade funcionam nas duas linguagens:
 
 ```lua
 -- Granular (estilo Solid/QML): só a prop que leu o signal re-executa.
-local sys = use("sys")
-local load = sys:subscribe("load")
+local load = use("sys"):subscribe("load")
 return Progress { value = function() local v = load(); return v and v.ratio or 0 end }
 
 -- Inteiro (estilo React): retornar uma função faz o widget todo virar um binding.
@@ -77,13 +99,11 @@ export default function Clock() {
 
 Componentes TSX rodam **uma vez**; o que é reativo é função (`label={() => ...}`)
 ou o próprio signal (`active={seconds}`). Handlers são `on_*` em Luau e `on*` em TSX.
-Tipos para o editor: `widgets/marathon.d.ts` (com `widgets/tsconfig.json`) e
-`widgets/marathon.d.luau` (luau-lsp `--definitions`).
+Tipos para o editor: `widgets/marathon.d.ts` e `widgets/marathon.d.luau`.
 
 ## Escrevendo um serviço
 
-Um serviço é um Unix socket em `$XDG_RUNTIME_DIR/marathon/services/<nome>.sock`
-(ou `$MARATHON_SERVICES_DIR`) falando JSON por linha:
+Um serviço é um Unix socket `<dir>/<nome>.sock` falando JSON por linha:
 
 ```
 → {"id":1,"op":"subscribe","path":"battery"}     ← {"id":1,"event":{...}}   (valor atual, depois cada mudança)
@@ -93,40 +113,28 @@ Um serviço é um Unix socket em `$XDG_RUNTIME_DIR/marathon/services/<nome>.sock
 ```
 
 `sdk/go/marathon` e `sdk/python/marathon_service.py` implementam isso em ~200
-linhas cada, sem dependências. Sockets fora do diretório entram por nome em
-`[services]` no `marathon.toml`. Dá para testar um serviço na mão:
-`socat - UNIX-CONNECT:run/services/power.sock` e digitar as linhas acima.
+linhas cada, sem dependências. Para testar na mão:
+`socat - UNIX-CONNECT:run/services/power.sock`.
 
-## O sandbox, camada por camada
+## Escrevendo um módulo
 
-| Camada | Como | Testado em |
+Módulos são o único caminho de I/O de uma extensão. Implemente
+`tessela::core::Module`: um nome, `invoke` (síncrono, checa capacidades com
+`cx.require`, cria signals e recursos amarrados ao dono), `release` e um
+prelúdio por linguagem. `crates/tessela-unix` é o exemplo de referência.
+
+## O sandbox
+
+| Camada | Como | Testado em `crates/tessela/tests/sandbox.rs` |
 |---|---|---|
-| Sem autoridade ambiente | Luau em `sandbox(true)`, sem `require`/`loadstring`/`getfenv`; QuickJS sem `std`/`os`, sem loader de módulos (todo `import` falha), sem `fetch`/timers | `*_has_no_ambient_authority`, `js_cannot_import_anything` |
-| Capacidades | `use(x)` falha se `x` não está em `uses`; o widget nunca abre socket — o core abre, por nome validado (`[a-z0-9_-]`, sem path traversal) | `undeclared_service_is_refused`, `rejects_path_like_service_names` |
-| Prelúdio imutável | globais do Luau read-only; no JS, globais `writable:false, configurable:false`; ids de signal fora do alcance do guest | `prelude_is_read_only` |
-| CPU | hook de interrupção dos dois motores contra um deadline por entrada (`budget_ms`) | `infinite_loops_are_interrupted`, `..._in_handler_..._widget_survives` |
-| Memória | limite do alocador por VM (`memory_mb`) | `memory_bombs_are_contained` |
-| Saída | árvore limitada (20k valores, profundidade 64) e só componentes do vocabulário | `huge_trees_are_rejected`, `unknown_components_are_rejected` |
-| Isolamento de falha | uma thread e uma VM por widget; travou ou estourou, só ele vira ⚠ | `widgets/intruder` |
+| Sem autoridade ambiente | Luau em `sandbox(true)`, sem `require`/`loadstring`/`getfenv`; QuickJS sem `std`/`os`, sem loader de módulos, sem `fetch`/timers; helpers internos removidos antes do código do usuário | `*_has_no_ambient_authority`, `js_cannot_import_anything` |
+| Só módulos registrados | sem o módulo `service`, `use` nem existe | `without_the_module_there_is_no_use` |
+| Capacidades | o módulo recusa o que o manifesto não declara; nomes de serviço não escapam do diretório | `undeclared_service_is_refused`, `service_names_cannot_escape_the_directory` |
+| Prelúdios imutáveis | globais Luau read-only; no JS, `writable:false, configurable:false` | `prelude_is_read_only` |
+| CPU e memória | interrupção por deadline (`budget_ms`), limite do alocador (`memory_mb`) | `infinite_loops_*`, `memory_bombs_are_contained` |
+| Saída | árvore limitada e só componentes do vocabulário | `huge_trees_are_rejected`, `unknown_components_are_rejected` |
+| Limpeza | descartar a extensão libera as assinaturas no serviço | `dropping_an_instance_releases_subscriptions` |
 
-**O que o sandbox não cobre:** um bug de corrupção de memória dentro do próprio
-QuickJS ou Luau (são C/C++). Para plugins de terceiros desconhecidos, o próximo
-passo é rodar o motor dentro de wasmtime — a API vista pelo widget não muda.
-
-`widgets/intruder` é um widget que tenta escapar de cada camada; adicione
-`"intruder"` em `bar` e descomente uma tentativa por vez.
-
-## Decisões e limites do spike
-
-- **Reatividade no host.** Signals moram no Rust; o guest só chama `get/set`. Por
-  isso Luau e TSX têm semântica idêntica e o rastreamento de dependências é um só.
-  Bindings filhos, handlers e assinaturas pertencem ao binding que os criou e são
-  descartados quando ele re-executa (teste `rebuilding_lists_does_not_leak`).
-- **GPUI via `gpui-unofficial`** (republicação dos crates do Zed no crates.io, já
-  com layer-shell). Para acompanhar o Zed direto, troque as duas dependências por
-  `git = "https://github.com/zed-industries/zed"` em `crates/shell/Cargo.toml`.
-- **Não há popups/OSD/control center** — só a barra. Cada um seria outra layer
-  surface consumindo o mesmo vocabulário.
-- **O serviço `power` simula** bateria e perfil quando não há `/sys/class/power_supply/BAT*`;
-  um serviço real falaria com power-profiles-daemon via D-Bus.
-- Ícones são glifos Unicode simples; um tema real mapearia nomes para Nerd Font/SVG.
+**Não coberto:** bugs de memória dentro do Luau ou do QuickJS (são C/C++). O
+caminho para isso é rodar o engine em WASM, sem mudar a API do guest.
+`widgets/intruder` tenta escapar de cada camada; adicione `"intruder"` em `bar`.

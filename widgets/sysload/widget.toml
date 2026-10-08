@@ -1,4 +1,4 @@
 name = "sysload"
 entry = "sysload.luau"
-uses = ["sys"]
+capabilities = ["service:sys"]
 memory_mb = 4

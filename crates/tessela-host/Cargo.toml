@@ -1,0 +1,17 @@
+[package]
+name = "tessela-host"
+description = "Runs extensions: manifests, worker threads, limits, hot reload; Renderer contract"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-core.workspace = true
+tessela-view.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true

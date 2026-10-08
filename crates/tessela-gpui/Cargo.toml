@@ -1,0 +1,17 @@
+[package]
+name = "tessela-gpui"
+description = "Renderer: GPUI, including Wayland layer-shell surfaces"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-host.workspace = true
+tessela-view.workspace = true
+anyhow.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true

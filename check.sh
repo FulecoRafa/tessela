@@ -5,8 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "== cargo test"
-cargo test -q --workspace 2>&1 | grep -E "^test result|FAILED|panicked" || true
-cargo test -q --workspace >/dev/null 2>&1
+cargo test -q 2>&1 | grep -E "^test result|FAILED|panicked" || true
+cargo test -q >/dev/null 2>&1
 
 echo "== go vet"
 (cd services/power && go vet ./...)

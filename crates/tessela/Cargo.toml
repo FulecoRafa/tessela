@@ -1,0 +1,38 @@
+[package]
+name = "tessela"
+description = "Dynamic UI and extension framework: sandboxed Luau/TSX extensions, pluggable modules and renderers"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["luau", "quickjs", "unix", "tui"]
+# Engines
+luau = ["dep:tessela-luau"]
+quickjs = ["dep:tessela-quickjs"]
+# Modules
+unix = ["dep:tessela-unix"]
+# Renderers (a headless renderer is always available)
+tui = ["dep:tessela-tui"]
+gpui = ["dep:tessela-gpui"]
+
+[dependencies]
+tessela-core.workspace = true
+tessela-view.workspace = true
+tessela-host.workspace = true
+tessela-proto.workspace = true
+tessela-luau = { workspace = true, optional = true }
+tessela-quickjs = { workspace = true, optional = true }
+tessela-unix = { workspace = true, optional = true }
+tessela-tui = { workspace = true, optional = true }
+tessela-gpui = { workspace = true, optional = true }
+
+[dev-dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+
+[[test]]
+name = "sandbox"
+required-features = ["luau", "quickjs", "unix"]

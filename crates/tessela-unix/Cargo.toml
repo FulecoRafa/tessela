@@ -1,0 +1,15 @@
+[package]
+name = "tessela-unix"
+description = "Module: services over Unix sockets, multiplexed and reconnecting"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-core.workspace = true
+tessela-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true

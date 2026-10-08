@@ -1,0 +1,13 @@
+[package]
+name = "tessela-tui"
+description = "Renderer: terminal (ratatui)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-host.workspace = true
+tessela-view.workspace = true
+ratatui.workspace = true
+anyhow.workspace = true

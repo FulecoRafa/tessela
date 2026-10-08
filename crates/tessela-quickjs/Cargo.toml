@@ -1,0 +1,13 @@
+[package]
+name = "tessela-quickjs"
+description = "JavaScript/TSX engine (QuickJS-NG via rquickjs, TSX via oxc)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-core.workspace = true
+serde_json.workspace = true
+rquickjs.workspace = true
+oxc.workspace = true

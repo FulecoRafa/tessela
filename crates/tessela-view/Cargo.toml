@@ -1,0 +1,12 @@
+[package]
+name = "tessela-view"
+description = "The closed UI vocabulary shared by guests and renderers"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

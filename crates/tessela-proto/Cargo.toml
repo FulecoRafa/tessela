@@ -1,0 +1,11 @@
+[package]
+name = "tessela-proto"
+description = "Line-delimited JSON protocol spoken by services (get, call, subscribe)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

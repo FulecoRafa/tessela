@@ -2,5 +2,5 @@
 # add "intruder" to `bar` in marathon.toml to see what the shell does with it.
 name = "intruder"
 entry = "intruder.tsx"
-uses = []        # declares nothing...
+capabilities = []        # declares nothing...
 budget_ms = 20

@@ -1,0 +1,23 @@
+[package]
+name = "marathon"
+description = "Linux desktop shell built on tessela: a bar of sandboxed Luau/TSX widgets"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "marathon"
+path = "src/main.rs"
+
+[features]
+default = []
+# GPUI layer-shell bar (needs wayland/xkbcommon/vulkan dev packages).
+gpui = ["tessela/gpui"]
+
+[dependencies]
+tessela = { workspace = true, features = ["luau", "quickjs", "unix", "tui"] }
+serde.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+log.workspace = true

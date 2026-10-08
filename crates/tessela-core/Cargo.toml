@@ -1,0 +1,13 @@
+[package]
+name = "tessela-core"
+description = "Engine-agnostic reactive core, extension instances and the Engine/Module contracts. No I/O."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-view.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

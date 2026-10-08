@@ -13,7 +13,7 @@ chmod 700 run "$MARATHON_SERVICES_DIR"
 
 features=()
 for a in "$@"; do [[ "$a" == "--gpui" ]] && features=(--features gpui); done
-cargo build -q -p shell "${features[@]}"
+cargo build -q -p marathon "${features[@]}"
 (cd services/power && go build -o ../../target/power .)
 
 pids=()

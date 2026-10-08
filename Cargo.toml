@@ -1,24 +1,50 @@
 [workspace]
 resolver = "2"
-members = ["crates/proto", "crates/view", "crates/connector", "crates/runtime", "crates/shell"]
+members = ["crates/*", "apps/*"]
+# Default `cargo build` skips the GPUI renderer (heavy, needs desktop libs).
+default-members = [
+    "crates/tessela",
+    "crates/tessela-core",
+    "crates/tessela-view",
+    "crates/tessela-proto",
+    "crates/tessela-luau",
+    "crates/tessela-quickjs",
+    "crates/tessela-host",
+    "crates/tessela-unix",
+    "crates/tessela-tui",
+    "apps/marathon",
+]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "MIT"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/tessela" # provisional name, see docs/adr/0008
 
 [workspace.dependencies]
-proto = { path = "crates/proto" }
-view = { path = "crates/view" }
-connector = { path = "crates/connector" }
-runtime = { path = "crates/runtime" }
+# internal
+tessela = { path = "crates/tessela", default-features = false }
+tessela-core = { path = "crates/tessela-core" }
+tessela-view = { path = "crates/tessela-view" }
+tessela-proto = { path = "crates/tessela-proto" }
+tessela-luau = { path = "crates/tessela-luau" }
+tessela-quickjs = { path = "crates/tessela-quickjs" }
+tessela-host = { path = "crates/tessela-host" }
+tessela-unix = { path = "crates/tessela-unix" }
+tessela-tui = { path = "crates/tessela-tui" }
+tessela-gpui = { path = "crates/tessela-gpui" }
+# external
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 anyhow = "1"
 thiserror = "2"
 crossbeam-channel = "0.5"
-log = "0.4"
-env_logger = "0.11"
+log = { version = "0.4", features = ["std"] }
 mlua = { version = "0.12", features = ["luau", "vendored"] }
 rquickjs = { version = "0.14", features = ["classes"] }
+oxc = { version = "0.153", features = ["transformer", "codegen", "semantic"] }
+ratatui = "0.30"
+futures = "0.3"
+gpui = { package = "gpui-unofficial", version = "=1.23.2" }
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.23.2" }
