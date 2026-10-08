@@ -8,6 +8,8 @@
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
+use futures::StreamExt;
+use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
     AnyElement, App, Bounds, Context, ElementId, FontWeight, Hsla, IntoElement, ParentElement,
@@ -22,6 +24,9 @@ use crate::flatten::{icon, short_error};
 use crate::host::{Frame, UiEvent, WidgetHandle};
 
 const HEIGHT: f32 = 32.0;
+
+/// Renders since start; `MARATHON_FRAME_STATS=1` logs the rate every 5 s.
+static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn color(hex: u32) -> Hsla {
     Rgba::from(rgb(hex)).into()
@@ -57,19 +62,19 @@ struct Bar {
 }
 
 impl Bar {
-    fn new(widgets: Vec<WidgetHandle>, frames: Receiver<Frame>, cx: &mut Context<Self>) -> Self {
-        // Frames come from widget threads; poll them on the UI executor.
+    fn new(
+        widgets: Vec<WidgetHandle>,
+        mut frames: UnboundedReceiver<Frame>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Event-driven: the UI thread sleeps until a widget emits a frame, then
+        // takes everything queued and notifies once. GPUI coalesces notifies
+        // into the next compositor frame, so 100 updates/s cost at most 60 renders.
         cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let mut batch = Vec::new();
+            while let Some(first) = frames.next().await {
+                let mut batch = vec![first];
                 while let Ok(f) = frames.try_recv() {
                     batch.push(f);
-                }
-                if batch.is_empty() {
-                    continue;
                 }
                 let alive = this.update(cx, |bar, cx| {
                     for f in batch {
@@ -93,6 +98,7 @@ impl Bar {
 
 impl Render for Bar {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let p = palette();
         let mut bar = div()
             .size_full()
@@ -104,7 +110,6 @@ impl Render for Bar {
             .bg(p.bg)
             .text_color(p.fg)
             .text_sm()
-            .font_family("monospace")
             .child(
                 div()
                     .px_2()
@@ -266,6 +271,30 @@ fn element(node: &Node, slot: usize, ui: &Sender<UiEvent>, p: &Palette) -> AnyEl
 }
 
 pub fn run(widgets: Vec<WidgetHandle>, frames: Receiver<Frame>) -> anyhow::Result<()> {
+    if std::env::var_os("MARATHON_FRAME_STATS").is_some() {
+        std::thread::spawn(|| {
+            let mut last = 0;
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let now = RENDERS.load(std::sync::atomic::Ordering::Relaxed);
+                log::info!("renders/s: {:.1}", (now - last) as f64 / 5.0);
+                last = now;
+            }
+        });
+    }
+    // Bridge the widget threads' channel into an async stream the UI can await.
+    let (tx, rx) = unbounded();
+    std::thread::Builder::new()
+        .name("frame-bridge".into())
+        .spawn(move || {
+            while let Ok(f) = frames.recv() {
+                if tx.unbounded_send(f).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn frame bridge");
+    let mut rx = Some(rx);
     gpui_platform::application().run(move |cx: &mut App| {
         let options = WindowOptions {
             titlebar: None,
@@ -286,8 +315,9 @@ pub fn run(widgets: Vec<WidgetHandle>, frames: Receiver<Frame>) -> anyhow::Resul
             }),
             ..Default::default()
         };
-        if let Err(e) = cx.open_window(options, |_, cx| cx.new(|cx| Bar::new(widgets, frames, cx)))
-        {
+        if let Err(e) = cx.open_window(options, |_, cx| {
+            cx.new(|cx| Bar::new(widgets, rx.take().expect("one window"), cx))
+        }) {
             log::error!("could not open the bar (does the compositor support layer-shell?): {e}");
             cx.quit();
         }

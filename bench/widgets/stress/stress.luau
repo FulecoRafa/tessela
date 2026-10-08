@@ -1,0 +1,5 @@
+local tick = use("stress"):subscribe("tick")
+return Text(function()
+	local t = tick()
+	return "tick " .. (if t then t.n else 0)
+end)

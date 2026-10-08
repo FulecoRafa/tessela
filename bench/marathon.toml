@@ -1,0 +1,4 @@
+# Same bar as ../marathon.toml; widgets resolve from ../widgets.
+widgets_dir = "../widgets"
+services_dir = "../run/services"
+bar = ["clock", "sysload", "battery", "profile"]

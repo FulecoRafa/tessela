@@ -6169,6 +6169,7 @@ dependencies = [
  "anyhow",
  "connector",
  "crossbeam-channel",
+ "futures",
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",
  "log",
