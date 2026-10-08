@@ -15,7 +15,8 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style as RStyle};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use tessela_host::{Renderer, Slot, Surface, UiEvent};
+use serde_json::{Value, json};
+use tessela_host::{Renderer, Slot, Surface, Trees, UiEvent};
 use tessela_view::text::{Segment, Style, flatten};
 use tessela_view::{Node, Tone};
 
@@ -79,13 +80,14 @@ fn event_loop(
 ) -> anyhow::Result<()> {
     let widgets = &surface.slots;
     let frames = &surface.frames;
-    let mut tree: Vec<Option<Node>> = vec![None; widgets.len()];
+    let mut trees = Trees::new(widgets.len());
     let mut focus = 0usize;
     let mut targets: Vec<Target> = Vec::new();
+    let mut pressed: Option<usize> = None;
 
     loop {
         while let Ok(f) = frames.try_recv() {
-            tree[f.slot] = Some(f.node);
+            trees.apply(&f);
         }
 
         terminal.draw(|frame| {
@@ -98,7 +100,7 @@ fn event_loop(
             ])
             .areas(area);
 
-            let (line, t) = bar_line(title, &tree, widgets, focus);
+            let (line, t) = bar_line(title, trees.nodes(), widgets, focus);
             targets = t;
             frame.render_widget(Paragraph::new(line).style(RStyle::new().bg(PANEL)), bar);
 
@@ -154,7 +156,9 @@ fn event_loop(
                     focus = (focus + n - 1) % n
                 }
                 KeyCode::Enter | KeyCode::Char(' ') => {
-                    fire(widgets, targets.get(focus), Fire::Click)
+                    for f in [Fire::Press, Fire::Release, Fire::Click] {
+                        fire(widgets, targets.get(focus), f)
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     fire(widgets, targets.get(focus), Fire::Scroll(1))
@@ -172,7 +176,14 @@ fn event_loop(
                     focus = i;
                     match m.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
-                            fire(widgets, targets.get(i), Fire::Click)
+                            fire(widgets, targets.get(i), Fire::Press);
+                            pressed = Some(i);
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            fire(widgets, targets.get(i), Fire::Release);
+                            if pressed.take() == Some(i) {
+                                fire(widgets, targets.get(i), Fire::Click)
+                            }
                         }
                         MouseEventKind::ScrollUp => fire(widgets, targets.get(i), Fire::Scroll(1)),
                         MouseEventKind::ScrollDown => {
@@ -189,17 +200,25 @@ fn event_loop(
 
 enum Fire {
     Click,
+    Press,
+    Release,
     Scroll(i32),
 }
 
 fn fire(widgets: &[Slot], target: Option<&Target>, what: Fire) {
     let Some(t) = target else { return };
     let ev = match what {
-        Fire::Click => t.seg.click.map(UiEvent::Click),
-        Fire::Scroll(d) => t.seg.scroll.map(|h| UiEvent::Scroll(h, d)),
+        Fire::Click => t.seg.click.clone().map(|h| UiEvent::new(h, Value::Null)),
+        Fire::Press => t.seg.press.clone().map(|h| UiEvent::new(h, Value::Null)),
+        Fire::Release => t.seg.release.clone().map(|h| UiEvent::new(h, Value::Null)),
+        Fire::Scroll(d) => t
+            .seg
+            .scroll
+            .clone()
+            .map(|h| UiEvent::new(h, json!({ "delta": d }))),
     };
     if let Some(ev) = ev {
-        let _ = widgets[t.slot].ui.send(ev);
+        widgets[t.slot].send(ev);
     }
 }
 
@@ -244,7 +263,7 @@ fn bar_line(
         flatten(node, &mut segs);
         for seg in segs {
             let w = Span::raw(seg.text.clone()).width() as u16;
-            let focused = seg.interactive() && targets.len() == focus;
+            let focused = seg.is_interactive() && targets.len() == focus;
             let mut style = match seg.style {
                 Style::Plain(t) => RStyle::new().fg(tone_color(t)),
                 Style::Pill { active: false } => {
@@ -259,7 +278,7 @@ fn bar_line(
             if focused {
                 style = style.add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
             }
-            if seg.interactive() {
+            if seg.is_interactive() {
                 targets.push(Target {
                     x0: x,
                     x1: x + w,

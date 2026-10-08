@@ -6712,6 +6712,7 @@ dependencies = [
  "tessela-luau",
  "tessela-proto",
  "tessela-quickjs",
+ "tessela-timer",
  "tessela-tui",
  "tessela-unix",
  "tessela-view",
@@ -6737,6 +6738,7 @@ dependencies = [
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",
  "log",
+ "serde_json",
  "tessela-host",
  "tessela-view",
 ]
@@ -6783,11 +6785,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessela-timer"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "serde_json",
+ "tessela-core",
+]
+
+[[package]]
 name = "tessela-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "ratatui",
+ "serde_json",
  "tessela-host",
  "tessela-view",
 ]

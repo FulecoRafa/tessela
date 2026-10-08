@@ -12,6 +12,8 @@ use tessela_core::{Grants, Limits};
 /// capabilities = ["service:power"]
 /// memory_mb = 16                  # default 16
 /// budget_ms = 50                  # CPU per entry into guest code; default 50
+/// calls_per_sec = 200             # module calls; default 200
+/// max_resources = 256             # live subscriptions, timers...; default 256
 /// ```
 ///
 /// `uses = ["power"]` is accepted as shorthand for `service:power`.
@@ -32,6 +34,10 @@ pub struct Manifest {
     pub memory_mb: usize,
     #[serde(default = "default_budget_ms")]
     pub budget_ms: u64,
+    #[serde(default)]
+    pub calls_per_sec: Option<u32>,
+    #[serde(default)]
+    pub max_resources: Option<usize>,
 }
 
 fn default_kind() -> String {
@@ -69,10 +75,13 @@ impl Manifest {
     }
 
     pub fn limits(&self) -> Limits {
+        let d = Limits::default();
         Limits {
             memory_bytes: self.memory_mb * 1024 * 1024,
             budget: Duration::from_millis(self.budget_ms),
-            ..Limits::default()
+            calls_per_sec: self.calls_per_sec.unwrap_or(d.calls_per_sec),
+            max_resources: self.max_resources.unwrap_or(d.max_resources),
+            ..d
         }
     }
 }

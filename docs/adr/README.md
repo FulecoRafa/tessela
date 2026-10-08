@@ -14,3 +14,8 @@ Escreva um ADR novo que substitui o antigo; não reescreva o histórico.
 | [0007](0007-features.md) | Toda peça opcional fica atrás de uma feature | aceita |
 | [0008](0008-nome-provisorio.md) | Nome provisório "tessela"; licença MIT OR Apache-2.0 | aceita |
 | [0009](0009-mensageria-interna.md) | Mensageria mira rede interna, não substituir email público | aceita |
+| [0010](0010-vocabulario-com-schemas.md) | Nós genéricos validados por schema; componentes de app com fallback | aceita |
+| [0011](0011-patches.md) | Frames são patches com ids estáveis | aceita |
+| [0012](0012-acoes-declarativas.md) | Props de evento aceitam ações executadas pelo host | aceita |
+| [0013](0013-pool-de-workers.md) | Pool de workers em vez de uma thread por extensão | aceita |
+| [0014](0014-timers-persist-quotas.md) | Timers, `persist` e quotas por extensão | aceita |

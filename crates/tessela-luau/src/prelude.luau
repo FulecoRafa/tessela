@@ -30,6 +30,11 @@ function signal(initial)
 	return wrap(host.new(initial))
 end
 
+-- Like `signal`, but the value survives reloads of this extension.
+function persist(key, initial)
+	return wrap(host.persist(key, initial))
+end
+
 function log(...)
 	local parts = table.pack(...)
 	for i = 1, parts.n do parts[i] = tostring(parts[i]) end
@@ -73,4 +78,9 @@ __rt = {
 	invoke = host.invoke,
 	wrap = wrap,
 	isSignal = function(v) return ids[v] ~= nil end,
+	-- A declarative action: the host calls the module when the event fires,
+	-- without running any extension code.
+	action = function(module, func, args)
+		return table.freeze({ ["$action"] = { module = module, func = func, args = args } })
+	end,
 }

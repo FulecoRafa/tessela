@@ -128,7 +128,9 @@ def start_services(stress):
 
 def command(bar, stress):
     if bar == "marathon":
-        cfg = ROOT / ("bench/marathon-stress.toml" if stress else "bench/marathon.toml")
+        # Overridable to A/B two marathon builds with their own widget sets.
+        cfg = os.environ.get("MARATHON_STRESS_CONFIG" if stress else "MARATHON_CONFIG")
+        cfg = Path(cfg) if cfg else ROOT / ("bench/marathon-stress.toml" if stress else "bench/marathon.toml")
         return [MARATHON_BIN, "--config", str(cfg), "--gpui"], {}
     extra = {"BENCH_STRESS": "1"} if stress else {}
     return [QS_BIN, "-p", str(ROOT / "bench/quickshell")], extra

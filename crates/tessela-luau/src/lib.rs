@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use mlua::{Function, Lua, Table, Value as LuaValue, VmState};
 use serde_json::{Map, Number, Value};
-use tessela_core::{Engine, EngineFactory, FnId, GuestError, HostCtx, Lang, fn_kind, marker, view};
+use tessela_core::{Engine, EngineFactory, FnId, GuestError, HostCtx, Lang, fn_kind, marker};
 
 const PRELUDE: &str = include_str!("prelude.luau");
 
@@ -273,6 +273,14 @@ impl LuaEngine {
                 },
             )?,
         )?;
+        let (h, f) = (host.clone(), fns.clone());
+        t.set(
+            "persist",
+            lua.create_function(move |_, (key, v): (String, LuaValue)| {
+                let v = ToJson::new(&h, &f, Mode::Reject).conv(v, None, 0)?;
+                Ok(h.core.borrow_mut().sig_persist(&key, v))
+            })?,
+        )?;
         let h = host.clone();
         t.set(
             "log",
@@ -282,10 +290,10 @@ impl LuaEngine {
             })?,
         )?;
         let components = lua.create_table()?;
-        for (i, c) in view::COMPONENTS.iter().enumerate() {
+        for (i, (name, shorthand)) in host.components().enumerate() {
             let e = lua.create_table()?;
-            e.set("name", c.name)?;
-            e.set("shorthand", c.shorthand)?;
+            e.set("name", name)?;
+            e.set("shorthand", shorthand)?;
             components.raw_set(i + 1, e)?;
         }
         t.set("components", components)?;

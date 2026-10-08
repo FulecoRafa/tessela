@@ -39,6 +39,12 @@ function use(name)
 	function svc:call(method, args, cb)
 		rt.invoke("service", "call", { service = name, method = method, args = args, cb = cb })
 	end
+	-- For event props: on_click = power:action("cycle_profile"). Runs no
+	-- extension code when fired; event data (e.g. scroll delta) arrives in
+	-- the call's args as `event`.
+	function svc:action(method, args)
+		return rt.action("service", "call", { service = name, method = method, args = args })
+	end
 	return table.freeze(svc)
 end
 "#;
@@ -54,6 +60,9 @@ const JS: &str = r#"
       call: (method, args, cb) => {
         rt.invoke("service", "call", { service: name, method, args: args ?? null, cb: cb ?? null });
       },
+      // For event props: onClick={power.action("cycle_profile")}. Runs no
+      // extension code when fired; event data arrives in the call's args as `event`.
+      action: (method, args) => rt.action("service", "call", { service: name, method, args: args ?? null }),
     });
   });
 })();
@@ -137,7 +146,7 @@ impl Module for UnixServices {
             "subscribe" => {
                 let path = args["path"].as_str().ok_or("missing path")?.to_string();
                 let key = self.next_key.fetch_add(1, Ordering::Relaxed);
-                let sig = cx.signal(Value::Null, Some(key));
+                let sig = cx.signal(Value::Null, Some(key))?;
                 let sink = cx.sink();
                 self.connector.subscribe(
                     &service,
@@ -165,7 +174,17 @@ impl Module for UnixServices {
             }
             "call" => {
                 let method = args["method"].as_str().ok_or("missing method")?.to_string();
-                let call_args = args.get("args").cloned().unwrap_or(Value::Null);
+                let mut call_args = args.get("args").cloned().unwrap_or(Value::Null);
+                // Declarative actions carry the event (scroll delta, ...) along.
+                if let Some(event) = args.get("event") {
+                    match &mut call_args {
+                        Value::Object(m) => {
+                            m.insert("event".into(), event.clone());
+                        }
+                        Value::Null => call_args = json!({ "event": event }),
+                        _ => {}
+                    }
+                }
                 if contains_function(&call_args) {
                     return Err("functions cannot be sent to services".into());
                 }

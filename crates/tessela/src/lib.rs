@@ -5,7 +5,7 @@
 //! | part | contract | shipped |
 //! |---|---|---|
 //! | engines | [`core::EngineFactory`] | `luau`, `quickjs` (JS/TSX) |
-//! | modules | [`core::Module`] | `unix` (services over Unix sockets) |
+//! | modules | [`core::Module`] | `unix` (services over Unix sockets), `timer` |
 //! | renderers | [`host::Renderer`] | [`host::Headless`], `tui`, `gpui` |
 //! | extensions | `widget.toml` + entry file | written by users, sandboxed |
 //!
@@ -37,6 +37,8 @@ pub use tessela_gpui as gpui;
 pub use tessela_luau as luau;
 #[cfg(feature = "quickjs")]
 pub use tessela_quickjs as quickjs;
+#[cfg(feature = "timer")]
+pub use tessela_timer as timer;
 #[cfg(feature = "tui")]
 pub use tessela_tui as tui;
 #[cfg(feature = "unix")]

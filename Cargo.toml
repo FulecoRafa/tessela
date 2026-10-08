@@ -11,6 +11,7 @@ default-members = [
     "crates/tessela-quickjs",
     "crates/tessela-host",
     "crates/tessela-unix",
+    "crates/tessela-timer",
     "crates/tessela-tui",
     "apps/marathon",
 ]
@@ -31,6 +32,7 @@ tessela-luau = { path = "crates/tessela-luau" }
 tessela-quickjs = { path = "crates/tessela-quickjs" }
 tessela-host = { path = "crates/tessela-host" }
 tessela-unix = { path = "crates/tessela-unix" }
+tessela-timer = { path = "crates/tessela-timer" }
 tessela-tui = { path = "crates/tessela-tui" }
 tessela-gpui = { path = "crates/tessela-gpui" }
 # external

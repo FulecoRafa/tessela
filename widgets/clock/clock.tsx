@@ -2,13 +2,14 @@
 //
 // Components run once (Solid-style). Anything reactive is a function prop:
 // label={() => ...}. Passing a signal itself (active={seconds}) also binds.
+// `persist` keeps the toggle across hot reloads of this file.
 
 type Clock = { hm: string; hms: string; date: string };
 
 export default function ClockWidget() {
   const sys = use("sys");
   const clock = sys.subscribe<Clock>("clock");
-  const seconds = signal(false);
+  const seconds = persist("seconds", false);
 
   const label = () => {
     const c = clock();

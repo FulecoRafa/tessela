@@ -2,7 +2,7 @@
 //! Luau/TSX widgets fed by services over Unix sockets.
 //!
 //! ```text
-//! marathon [--config marathon.toml] [--headless] [--seconds N] [--click WIDGET@SECS]... [--gpui]
+//! marathon [--config marathon.toml] [--headless] [--seconds N] [--click WIDGET@SECS]... [--scroll WIDGET@SECS:DELTA]... [--gpui]
 //! ```
 //!
 //! Everything shell-specific lives here (config format, CLI, logging, which
@@ -17,7 +17,9 @@ use std::time::Duration;
 use anyhow::Context;
 use serde::Deserialize;
 use tessela::host::{App, Headless};
+use tessela::timer::Timers;
 use tessela::unix::{Registry, UnixServices};
+use tessela::view::{ComponentSpec, Fallback, Node, PropSpec, PropType};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,9 +45,10 @@ struct Args {
     gpui: bool,
     seconds: Option<f64>,
     clicks: Vec<(String, f64)>,
+    scrolls: Vec<(String, f64, i32)>,
 }
 
-const USAGE: &str = "marathon [--config marathon.toml] [--headless] [--seconds N] [--click WIDGET@SECS]... [--gpui]";
+const USAGE: &str = "marathon [--config marathon.toml] [--headless] [--seconds N] [--click WIDGET@SECS]... [--scroll WIDGET@SECS:DELTA]... [--gpui]";
 
 fn args() -> anyhow::Result<Args> {
     let mut a = Args {
@@ -54,6 +57,7 @@ fn args() -> anyhow::Result<Args> {
         gpui: false,
         seconds: None,
         clicks: vec![],
+        scrolls: vec![],
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -68,6 +72,16 @@ fn args() -> anyhow::Result<Args> {
                 let spec = it.next().context("--click needs WIDGET@SECS")?;
                 let (w, s) = spec.split_once('@').context("--click needs WIDGET@SECS")?;
                 a.clicks.push((w.to_string(), s.parse()?));
+            }
+            "--scroll" => {
+                let spec = it.next().context("--scroll needs WIDGET@SECS:DELTA")?;
+                let (w, rest) = spec
+                    .split_once('@')
+                    .context("--scroll needs WIDGET@SECS:DELTA")?;
+                let (t, d) = rest
+                    .split_once(':')
+                    .context("--scroll needs WIDGET@SECS:DELTA")?;
+                a.scrolls.push((w.to_string(), t.parse()?, d.parse()?));
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -106,6 +120,48 @@ impl log::Log for RingLogger {
         }
     }
     fn flush(&self) {}
+}
+
+/// `Meter { icon, label, value }`: the shell's own component. No renderer
+/// draws it natively yet, so it always arrives as its fallback.
+fn meter() -> ComponentSpec {
+    const PROPS: &[PropSpec] = &[
+        PropSpec {
+            name: "icon",
+            ty: PropType::String,
+            required: false,
+        },
+        PropSpec {
+            name: "label",
+            ty: PropType::String,
+            required: false,
+        },
+        PropSpec {
+            name: "value",
+            ty: PropType::Number,
+            required: true,
+        },
+    ];
+    let fallback: Fallback = Arc::new(|n: &Node| {
+        let mut bar = Node::new("Progress").prop("value", n.f32("value").unwrap_or(0.0));
+        if let Some(l) = n.str("label") {
+            bar = bar.prop("label", l);
+        }
+        match n.str("icon") {
+            Some(i) => Node::new("Row")
+                .prop("gap", 4)
+                .child(Node::new("Icon").prop("name", i))
+                .child(bar),
+            None => bar,
+        }
+    });
+    ComponentSpec {
+        name: "Meter",
+        shorthand: Some("value"),
+        props: PROPS,
+        children: false,
+        fallback: Some(fallback),
+    }
 }
 
 fn resolve(base: &Path, p: &Path) -> PathBuf {
@@ -155,13 +211,15 @@ fn main() -> anyhow::Result<()> {
     );
 
     let widgets_dir = resolve(&base, &config.widgets_dir);
+    let builder = App::builder()
+        .engines(tessela::engines())
+        .module(services)
+        .module(Timers::new())
+        .component(meter())?;
     let app = config
         .bar
         .iter()
-        .fold(
-            App::builder().engines(tessela::engines()).module(services),
-            |b, w| b.extension(widgets_dir.join(w)),
-        )
+        .fold(builder, |b, w| b.extension(widgets_dir.join(w)))
         .build()?;
 
     if args.gpui {
@@ -179,6 +237,9 @@ fn main() -> anyhow::Result<()> {
         }
         for (w, at) in args.clicks {
             r = r.click(w, Duration::from_secs_f64(at));
+        }
+        for (w, at, d) in args.scrolls {
+            r = r.scroll(w, Duration::from_secs_f64(at), d);
         }
         return app.run(r);
     }

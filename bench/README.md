@@ -44,3 +44,20 @@ Os renders são limitados a ~61/s pelo compositor nos dois.
   existe para o GPUI (era um alias do fontconfig) e cada medição de texto gerava
   um erro — com `RUST_BACKTRACE=1`, com backtrace (40 % de CPU a 100 Hz); e a
   entrega de frames passou de polling a cada 16 ms para um canal que acorda a UI.
+
+## A/B entre fases (mesma máquina, intercalado, 3 rodadas)
+
+`MARATHON_BIN`, `MARATHON_CONFIG` e `MARATHON_STRESS_CONFIG` permitem comparar
+dois builds com seus próprios widgets. Mediana (mín–máx):
+
+|                     | fase 0 | fase 1 |
+|---------------------|--------|--------|
+| primeiro frame      | 0,32 s (0,28–0,42) | 0,28 s (0,27–0,32) |
+| PSS ocioso          | 138 MiB | 138 MiB |
+| CPU ocioso (1 Hz)   | 0,88 % (0,88–0,92) | **0,48 %** (0,44–0,48) |
+| CPU com contador 100 Hz | 29,3 % (28,7–29,4) | 29,7 % (28,5–30,6) |
+
+O ocioso caiu porque patches vazios não acordam o renderer: quando um
+serviço publica um valor que não muda o que está na tela, nada é redesenhado.
+Esta máquina é mais lenta que a da tabela acima (os dois builds e o
+Quickshell dobraram de CPU nela), por isso só vale comparar dentro de cada tabela.

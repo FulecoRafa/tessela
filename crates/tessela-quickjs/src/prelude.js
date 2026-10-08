@@ -19,6 +19,8 @@
   };
 
   const signal = (initial) => wrap(host.sigNew(enc(initial)));
+  // Like `signal`, but the value survives reloads of this extension.
+  const persist = (key, initial) => wrap(host.persist(String(key), enc(initial)));
   const log = (...parts) => host.log(parts.map(String).join(" "));
 
   const Fragment = "Fragment";
@@ -33,7 +35,7 @@
     return out;
   };
 
-  const globals = { signal, log, h, Fragment };
+  const globals = { signal, persist, log, h, Fragment };
   for (const c of dec(host.components)) globals[c.name] = c.name;
   for (const [k, v] of Object.entries(globals)) {
     Object.defineProperty(globalThis, k, { value: v, writable: false, configurable: false, enumerable: false });
@@ -44,6 +46,9 @@
     invoke: (module, func, args) => dec(host.invoke(module, func, args ?? null)),
     wrap,
     isSignal: (v) => signals.has(v),
+    // A declarative action: the host calls the module when the event fires,
+    // without running any extension code.
+    action: (module, func, args) => Object.freeze({ $action: { module, func, args: args ?? null } }),
     define: (name, value) =>
       Object.defineProperty(globalThis, name, { value, writable: false, configurable: false, enumerable: false }),
   });

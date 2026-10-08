@@ -2,7 +2,7 @@
 # Builds everything, starts the Go and Python services, runs the bar.
 # Extra arguments go to marathon, e.g.:
 #   ./demo.sh                                  # terminal bar (interactive)
-#   ./demo.sh --headless --seconds 8 --click profile@3
+#   ./demo.sh --headless --seconds 8 --click profile@3 --scroll profile@5:-1
 #   ./demo.sh --gpui                           # needs: cargo build --features gpui
 set -euo pipefail
 cd "$(dirname "$0")"

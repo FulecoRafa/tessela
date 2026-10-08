@@ -22,11 +22,12 @@ Linux (`apps/marathon`).
 crates/
   tessela          fachada: re-exporta tudo atrás de features
   tessela-core     grafo reativo, Instance, traits Engine e Module (sem I/O)
-  tessela-view     vocabulário de UI (Row, Column, Text, Icon, Pill, Button, Progress, Spacer)
-  tessela-host     manifestos, threads, hot reload, trait Renderer, renderer Headless
+  tessela-view     vocabulário (Row, Column, Text, Icon, Pill, Button, Progress, Spacer), schemas, patches
+  tessela-host     manifestos, pool de workers, hot reload, trait Renderer, renderer Headless
   tessela-luau     engine Luau            (feature luau)
   tessela-quickjs  engine JS/TSX          (feature quickjs)
   tessela-unix     módulo de serviços     (feature unix)
+  tessela-timer    módulo de timers       (feature timer)
   tessela-tui      renderer de terminal   (feature tui)
   tessela-gpui     renderer GPUI          (feature gpui)
   tessela-proto    protocolo dos serviços
@@ -40,11 +41,14 @@ widgets/           widgets da marathon (Luau e TSX)
 
 ```rust
 use tessela::host::{App, Headless};
+use tessela::timer::Timers;
 use tessela::unix::UnixServices;
 
 App::builder()
     .engines(tessela::engines())                       // luau + quickjs, conforme as features
     .module(UnixServices::new(["/run/user/1000/marathon/services"]))
+    .module(Timers::new())
+    .component(meter())?                               // componente do app com fallback (ver apps/marathon)
     .extension("widgets/clock")
     .extension("widgets/battery")
     .build()?
@@ -55,7 +59,7 @@ App::builder()
 
 ```sh
 ./demo.sh                      # barra no terminal (←/→ foco, enter clica, ↑/↓ scroll, mouse funciona)
-./demo.sh --headless --seconds 8 --click profile@3
+./demo.sh --headless --seconds 8 --click profile@3 --scroll profile@5:-1
 ./demo.sh --gpui               # barra GPUI em layer-shell (Wayland)
 ./check.sh                     # testes + e2e sem display
 ```
@@ -72,9 +76,11 @@ Cada extensão é uma pasta com `widget.toml` e um arquivo de entrada:
 ```toml
 name = "battery"
 entry = "battery.luau"              # .luau/.lua ou .tsx/.ts/.jsx/.js
-capabilities = ["service:power"]    # tudo que não está aqui é negado
+capabilities = ["service:power", "timer"]   # tudo que não está aqui é negado
 memory_mb = 16                      # padrão 16
 budget_ms = 50                      # CPU por entrada no guest; padrão 50
+calls_per_sec = 200                 # chamadas a módulos; padrão 200
+max_resources = 256                 # assinaturas, timers... vivos; padrão 256
 ```
 
 Os dois estilos de reatividade funcionam nas duas linguagens:
@@ -98,7 +104,18 @@ export default function Clock() {
 ```
 
 Componentes TSX rodam **uma vez**; o que é reativo é função (`label={() => ...}`)
-ou o próprio signal (`active={seconds}`). Handlers são `on_*` em Luau e `on*` em TSX.
+ou o próprio signal (`active={seconds}`). Eventos são `on_*` em Luau e `on*` em
+TSX: `click`, `press`, `release` e `scroll` (`{ delta }`).
+
+Mais ferramentas, nas duas linguagens:
+
+```tsx
+const seconds = persist("seconds", false);          // sobrevive a hot reload
+const stop = every(1000, () => tick.update((n) => n + 1));   // capacidade "timer"; para com o dono
+<Pill label="perfil" onClick={power.action("cycle_profile")} />  // ação: o host chama o serviço,
+                                                                 // nenhum código da extensão roda
+{items().map((i) => <Text key={i.id} text={i.name} />)}         // `key` preserva identidade em listas
+```
 Tipos para o editor: `widgets/marathon.d.ts` e `widgets/marathon.d.luau`.
 
 ## Escrevendo um serviço
@@ -132,7 +149,9 @@ prelúdio por linguagem. `crates/tessela-unix` é o exemplo de referência.
 | Capacidades | o módulo recusa o que o manifesto não declara; nomes de serviço não escapam do diretório | `undeclared_service_is_refused`, `service_names_cannot_escape_the_directory` |
 | Prelúdios imutáveis | globais Luau read-only; no JS, `writable:false, configurable:false` | `prelude_is_read_only` |
 | CPU e memória | interrupção por deadline (`budget_ms`), limite do alocador (`memory_mb`) | `infinite_loops_*`, `memory_bombs_are_contained` |
-| Saída | árvore limitada e só componentes do vocabulário | `huge_trees_are_rejected`, `unknown_components_are_rejected` |
+| Saída | árvore limitada, validada por schema, só componentes do vocabulário | `huge_trees_are_rejected`, `unknown_components_are_rejected` |
+| Quotas | chamadas a módulos por segundo, recursos vivos | `call_rate_is_limited`, `live_resources_are_limited` (em `phase1.rs`) |
+| Ações | ação forjada para serviço não declarado é recusada | `forged_actions_still_need_the_capability` |
 | Limpeza | descartar a extensão libera as assinaturas no serviço | `dropping_an_instance_releases_subscriptions` |
 
 **Não coberto:** bugs de memória dentro do Luau ou do QuickJS (são C/C++). O

@@ -13,8 +13,8 @@ possível. Regras para um componente entrar:
 3. pelo menos dois renderers o implementam.
 
 Hoje: `Row`, `Column`, `Text`, `Icon`, `Pill`, `Button`, `Progress`, `Spacer`
-(lista em `tessela_view::COMPONENTS`). Na fase 1, apps poderão registrar
-componentes próprios sob as mesmas regras.
+(`tessela_view::CORE`). Apps registram componentes próprios com fallback
+([ADR 0010](0010-vocabulario-com-schemas.md)).
 
 ## Consequências
 - Guests não conseguem pedir nada que um renderer não saiba desenhar.

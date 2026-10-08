@@ -31,7 +31,12 @@ struct Signal {
     value: Value,
     dependents: HashSet<FnId>,
     resource: Option<ResourceRef>,
+    /// Written through to the persist store on every change.
+    persist: Option<String>,
 }
+
+/// Values that outlive an instance: hot reloads read them back (docs/adr/0014).
+pub type PersistStore = std::sync::Arc<std::sync::Mutex<HashMap<String, Value>>>;
 
 #[derive(Debug, Default)]
 struct Binding {
@@ -64,6 +69,10 @@ pub enum HostError {
     },
     #[error("unknown signal {0}")]
     UnknownSignal(SigId),
+    #[error(
+        "extension '{0}' holds too many resources (limit {1}); release subscriptions or timers it no longer needs"
+    )]
+    TooManyResources(String, usize),
 }
 
 /// Capabilities granted to one extension. `service:*` grants every `service:`.
@@ -101,6 +110,9 @@ pub struct Core {
     released_fns: Vec<FnId>,
     /// Module resources disposed since the instance last released them.
     released_resources: Vec<ResourceRef>,
+    live_resources: usize,
+    max_resources: usize,
+    persist: Option<PersistStore>,
 }
 
 impl Core {
@@ -117,7 +129,36 @@ impl Core {
             logs: Vec::new(),
             released_fns: Vec::new(),
             released_resources: Vec::new(),
+            live_resources: 0,
+            max_resources: usize::MAX,
+            persist: None,
         }
+    }
+
+    pub fn with_max_resources(mut self, n: usize) -> Self {
+        self.max_resources = n;
+        self
+    }
+
+    pub fn with_persist(mut self, store: PersistStore) -> Self {
+        self.persist = Some(store);
+        self
+    }
+
+    fn reserve(&mut self) -> Result<(), HostError> {
+        if self.live_resources >= self.max_resources {
+            return Err(HostError::TooManyResources(
+                self.extension.clone(),
+                self.max_resources,
+            ));
+        }
+        self.live_resources += 1;
+        Ok(())
+    }
+
+    fn release(&mut self, r: ResourceRef) {
+        self.live_resources -= 1;
+        self.released_resources.push(r);
     }
 
     fn id(&mut self) -> u64 {
@@ -147,11 +188,41 @@ impl Core {
     }
 
     pub fn sig_new(&mut self, value: Value) -> SigId {
-        self.sig_new_with(value, None)
+        self.insert_signal(value, None, None)
     }
 
     /// A signal backed by a module resource: disposing the signal releases it.
-    pub fn sig_new_with(&mut self, value: Value, resource: Option<ResourceRef>) -> SigId {
+    pub fn sig_new_with(
+        &mut self,
+        value: Value,
+        resource: Option<ResourceRef>,
+    ) -> Result<SigId, HostError> {
+        if resource.is_some() {
+            self.reserve()?;
+        }
+        Ok(self.insert_signal(value, resource, None))
+    }
+
+    /// A signal whose value survives reloads of the extension: it starts from
+    /// the stored value when there is one.
+    pub fn sig_persist(&mut self, key: &str, initial: Value) -> SigId {
+        let stored = self
+            .persist
+            .as_ref()
+            .and_then(|p| p.lock().unwrap().get(key).cloned());
+        let value = stored.unwrap_or(initial);
+        if let Some(p) = &self.persist {
+            p.lock().unwrap().insert(key.to_string(), value.clone());
+        }
+        self.insert_signal(value, None, Some(key.to_string()))
+    }
+
+    fn insert_signal(
+        &mut self,
+        value: Value,
+        resource: Option<ResourceRef>,
+        persist: Option<String>,
+    ) -> SigId {
         let id = self.id();
         self.signals.insert(
             id,
@@ -159,6 +230,7 @@ impl Core {
                 value,
                 dependents: HashSet::new(),
                 resource,
+                persist,
             },
         );
         self.own(Owned::Sig(id));
@@ -167,8 +239,10 @@ impl Core {
 
     /// Tie a resource that is not a signal (a timer, a pending call) to the
     /// current owner.
-    pub fn own_resource(&mut self, resource: ResourceRef) {
+    pub fn own_resource(&mut self, resource: ResourceRef) -> Result<(), HostError> {
+        self.reserve()?;
         self.own(Owned::Resource(resource));
+        Ok(())
     }
 
     /// Tracked read: inside a binding, records the dependency.
@@ -179,6 +253,21 @@ impl Core {
             frame.insert(id);
         }
         Ok(v)
+    }
+
+    /// A resource ended on its own: forget it without asking its module to
+    /// release it. Unknown resources (already disposed) are ignored.
+    pub fn finish_resource(&mut self, r: ResourceRef) {
+        for items in self.owned.values_mut() {
+            if let Some(pos) = items
+                .iter()
+                .position(|o| matches!(o, Owned::Resource(x) if *x == r))
+            {
+                items.swap_remove(pos);
+                self.live_resources -= 1;
+                return;
+            }
+        }
     }
 
     /// Untracked read, for `update(fn)` and handlers.
@@ -196,6 +285,9 @@ impl Core {
             .ok_or(HostError::UnknownSignal(id))?;
         if sig.value == value {
             return Ok(());
+        }
+        if let (Some(key), Some(store)) = (&sig.persist, &self.persist) {
+            store.lock().unwrap().insert(key.clone(), value.clone());
         }
         sig.value = value;
         let deps: Vec<FnId> = sig.dependents.iter().copied().collect();
@@ -325,10 +417,10 @@ impl Core {
                 }
                 Owned::Sig(s) => {
                     if let Some(r) = self.signals.remove(&s).and_then(|sig| sig.resource) {
-                        self.released_resources.push(r);
+                        self.release(r);
                     }
                 }
-                Owned::Resource(r) => self.released_resources.push(r),
+                Owned::Resource(r) => self.release(r),
             }
         }
     }
@@ -336,6 +428,10 @@ impl Core {
     /// (live bindings, live signals) — exposed for leak tests.
     pub fn live_counts(&self) -> (usize, usize) {
         (self.bindings.len(), self.signals.len())
+    }
+
+    pub fn live_resources(&self) -> usize {
+        self.live_resources
     }
 }
 
@@ -358,11 +454,39 @@ mod tests {
         let b = c.register_fn(FnKind::Binding);
         let prev = c.begin_binding(b);
         let r = ResourceRef { module: 0, key: 7 };
-        c.sig_new_with(Value::Null, Some(r));
+        c.sig_new_with(Value::Null, Some(r)).unwrap();
         c.end_binding(b, prev, None);
         assert!(c.take_released_resources().is_empty());
         let prev = c.begin_binding(b);
         c.end_binding(b, prev, None);
         assert_eq!(c.take_released_resources(), [r]);
+        assert_eq!(c.live_resources(), 0);
+    }
+
+    #[test]
+    fn resource_quota() {
+        let mut c = Core::new("t", Grants::default()).with_max_resources(2);
+        for key in 0..2 {
+            c.own_resource(ResourceRef { module: 0, key }).unwrap();
+        }
+        assert!(matches!(
+            c.own_resource(ResourceRef { module: 0, key: 9 }),
+            Err(HostError::TooManyResources(..))
+        ));
+        c.dispose_all();
+        assert_eq!(c.live_resources(), 0);
+        c.own_resource(ResourceRef { module: 0, key: 9 }).unwrap();
+    }
+
+    #[test]
+    fn persisted_signals_survive_a_new_core() {
+        let store = PersistStore::default();
+        let mut a = Core::new("t", Grants::default()).with_persist(store.clone());
+        let s = a.sig_persist("seconds", Value::Bool(false));
+        a.sig_set(s, Value::Bool(true)).unwrap();
+        drop(a);
+        let mut b = Core::new("t", Grants::default()).with_persist(store);
+        let s = b.sig_persist("seconds", Value::Bool(false));
+        assert_eq!(b.sig_peek(s).unwrap(), Value::Bool(true));
     }
 }

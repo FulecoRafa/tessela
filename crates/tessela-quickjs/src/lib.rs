@@ -14,7 +14,7 @@ use std::rc::Rc;
 use rquickjs::{Context, Ctx, Function, Module, Persistent, Runtime, Type, Value as JsValue};
 use serde_json::{Map, Number, Value};
 use tessela_core::{
-    Engine, EngineFactory, FnId, GuestError, HostCtx, Lang, fn_kind, marker, prop_key, view,
+    Engine, EngineFactory, FnId, GuestError, HostCtx, Lang, fn_kind, marker, prop_key,
 };
 
 const PRELUDE: &str = include_str!("prelude.js");
@@ -278,14 +278,21 @@ fn install_host<'js>(ctx: &Ctx<'js>, host: &Rc<HostCtx>, fns: &FnMap) -> rquickj
     )?;
     let h = host.clone();
     t.set(
+        "persist",
+        Function::new(ctx.clone(), move |key: String, json: String| -> u64 {
+            h.core.borrow_mut().sig_persist(&key, parse(&json))
+        })?,
+    )?;
+    let h = host.clone();
+    t.set(
         "log",
         Function::new(ctx.clone(), move |msg: String| {
             h.core.borrow_mut().log(msg);
         })?,
     )?;
-    let components: Vec<Value> = view::COMPONENTS
-        .iter()
-        .map(|c| serde_json::json!({ "name": c.name, "shorthand": c.shorthand }))
+    let components: Vec<Value> = host
+        .components()
+        .map(|(name, shorthand)| serde_json::json!({ "name": name, "shorthand": shorthand }))
         .collect();
     t.set("components", Value::Array(components).to_string())?;
     ctx.globals().set("__host", t)?;

@@ -16,7 +16,7 @@ default = []
 gpui = ["tessela/gpui"]
 
 [dependencies]
-tessela = { workspace = true, features = ["luau", "quickjs", "unix", "tui"] }
+tessela = { workspace = true, features = ["luau", "quickjs", "unix", "timer", "tui"] }
 serde.workspace = true
 toml.workspace = true
 anyhow.workspace = true

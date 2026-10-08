@@ -6,7 +6,7 @@
 //!   ownership and capability checks live here, so every engine behaves the
 //!   same.
 //! - [`Module`]: the *only* way an extension reaches the outside world (Unix
-//!   sockets, storage, timers, network...). A module is invoked synchronously
+//!   sockets, timers, storage, network...). A module is invoked synchronously
 //!   from guest code through [`ModuleCx`] and answers asynchronously through a
 //!   [`Sink`]. Resources it creates are owned by the reactive graph and
 //!   released through [`Module::release`] when their owner goes away.
@@ -25,9 +25,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
-pub use reactive::{Core, FnId, FnKind, Grants, HostError, ResourceRef, SigId};
+pub use reactive::{Core, FnId, FnKind, Grants, HostError, PersistStore, ResourceRef, SigId};
 pub use tessela_view as view;
-pub use tessela_view::Node;
+pub use tessela_view::{Action, Handler, Node, Vocabulary};
 
 // ---------------------------------------------------------------- limits
 
@@ -42,6 +42,10 @@ pub struct Limits {
     pub max_values: usize,
     /// Cap on nesting of guest values.
     pub max_depth: usize,
+    /// Module calls allowed per second (token bucket, burst = one second).
+    pub calls_per_sec: u32,
+    /// Live module resources (subscriptions, timers) at any time.
+    pub max_resources: usize,
 }
 
 impl Default for Limits {
@@ -51,6 +55,8 @@ impl Default for Limits {
             budget: Duration::from_millis(50),
             max_values: 20_000,
             max_depth: 64,
+            calls_per_sec: 200,
+            max_resources: 256,
         }
     }
 }
@@ -81,6 +87,9 @@ pub enum Inbound {
     Signal { sig: SigId, value: Value },
     /// Call a guest handler, untracked (call results, timers).
     Callback { f: FnId, value: Value },
+    /// A resource finished on its own (a one-shot timer fired): stop counting
+    /// it against the quota. The module is not asked to release it.
+    Finished(ResourceRef),
 }
 
 /// Where modules send [`Inbound`]s for one instance. Cheap to clone; safe to
@@ -113,8 +122,9 @@ pub trait Module: Send + Sync + 'static {
         None
     }
 
-    /// Called synchronously from guest code. Functions in `args` arrive as
-    /// `{"$fn": id}` handler markers. Must not block.
+    /// Called synchronously from guest code, or by the host for a declarative
+    /// action. Functions in `args` arrive as `{"$fn": id}` handler markers.
+    /// Must not block.
     fn invoke(&self, cx: &mut ModuleCx<'_>, func: &str, args: Value) -> Result<Value, String>;
 
     /// A resource this module created (via [`ModuleCx::signal`] or
@@ -122,7 +132,7 @@ pub trait Module: Send + Sync + 'static {
     fn release(&self, _key: u64) {}
 }
 
-/// What a module may do while handling a guest call.
+/// What a module may do while handling a call.
 pub struct ModuleCx<'a> {
     core: &'a mut Core,
     index: usize,
@@ -140,18 +150,32 @@ impl ModuleCx<'_> {
     }
 
     /// A signal owned by the calling code. With `resource = Some(key)`,
-    /// disposing the signal calls `release(key)` on this module.
-    pub fn signal(&mut self, initial: Value, resource: Option<u64>) -> SigId {
+    /// disposing the signal calls `release(key)` on this module, and the
+    /// signal counts against the extension's resource quota.
+    pub fn signal(&mut self, initial: Value, resource: Option<u64>) -> Result<SigId, String> {
         let r = resource.map(|key| ResourceRef {
             module: self.index,
             key,
         });
-        self.core.sig_new_with(initial, r)
+        self.core
+            .sig_new_with(initial, r)
+            .map_err(|e| e.to_string())
     }
 
-    /// Tie a non-signal resource (a timer, an in-flight request) to the caller.
-    pub fn own(&mut self, key: u64) {
-        self.core.own_resource(ResourceRef {
+    /// Tie a non-signal resource (a timer, an in-flight request) to the
+    /// caller. Returns the reference to send in [`Inbound::Finished`].
+    pub fn own(&mut self, key: u64) -> Result<ResourceRef, String> {
+        let r = ResourceRef {
+            module: self.index,
+            key,
+        };
+        self.core.own_resource(r).map_err(|e| e.to_string())?;
+        Ok(r)
+    }
+
+    /// The resource ended early (e.g. the guest cancelled it).
+    pub fn finish(&mut self, key: u64) {
+        self.core.finish_resource(ResourceRef {
             module: self.index,
             key,
         });
@@ -169,8 +193,10 @@ pub struct HostCtx {
     pub core: RefCell<Core>,
     deadline: Cell<Instant>,
     pub limits: Limits,
+    vocabulary: Arc<Vocabulary>,
     modules: Vec<Arc<dyn Module>>,
     sink: Sink,
+    bucket: Cell<(f64, Instant)>,
 }
 
 impl HostCtx {
@@ -183,6 +209,30 @@ impl HostCtx {
         self.deadline.set(Instant::now() + self.limits.budget);
     }
 
+    /// Components guests may construct, for the engines' preludes.
+    pub fn components(&self) -> impl Iterator<Item = (&'static str, Option<&'static str>)> + '_ {
+        self.vocabulary
+            .guest_components()
+            .map(|c| (c.name, c.shorthand))
+    }
+
+    fn take_token(&self) -> Result<(), String> {
+        let rate = self.limits.calls_per_sec as f64;
+        let (tokens, at) = self.bucket.get();
+        let now = Instant::now();
+        let tokens = (tokens + now.duration_since(at).as_secs_f64() * rate).min(rate);
+        if tokens < 1.0 {
+            self.bucket.set((tokens, now));
+            return Err(format!(
+                "extension '{}' exceeded {} module calls per second",
+                self.core.borrow().extension,
+                self.limits.calls_per_sec
+            ));
+        }
+        self.bucket.set((tokens - 1.0, now));
+        Ok(())
+    }
+
     pub fn invoke(&self, module: &str, func: &str, args: Value) -> Result<Value, String> {
         let (index, m) = self
             .modules
@@ -190,6 +240,7 @@ impl HostCtx {
             .enumerate()
             .find(|(_, m)| m.name() == module)
             .ok_or_else(|| format!("no module '{module}' in this host"))?;
+        self.take_token()?;
         let mut core = self.core.borrow_mut();
         let mut cx = ModuleCx {
             core: &mut core,
@@ -215,7 +266,10 @@ impl HostCtx {
 ///
 /// Values crossing the boundary are JSON. Guest functions found in values are
 /// registered with the core and replaced by markers: `{"$bind": id}` for
-/// reactive props, `{"$fn": id}` for handlers (see [`fn_kind`]).
+/// reactive props, `{"$fn": id}` for handlers (see [`fn_kind`]). A guest's
+/// core prelude must offer `signal`, `persist`, `log`, the component
+/// constructors from [`HostCtx::components`] and, privately to module
+/// preludes, `__rt.invoke`, `__rt.wrap` and `__rt.action`.
 pub trait Engine {
     /// Evaluate the entry file; returns the exported root (a node or a binding).
     fn load(&mut self, source: &str, file: &str) -> Result<Value, GuestError>;
@@ -233,6 +287,7 @@ pub trait EngineFactory: Send + Sync + 'static {
 
 pub const BIND: &str = "$bind";
 pub const FN: &str = "$fn";
+pub const ACTION: &str = "$action";
 
 /// Decides how a guest function found under `key` is registered. Props named
 /// `on_*` (or `onX` in JS, normalized by [`prop_key`]) are handlers; any other
@@ -249,6 +304,11 @@ pub fn fn_kind(key: Option<&str>, to_module: bool) -> FnKind {
 pub fn marker(kind: FnKind, id: FnId) -> Value {
     let k = if kind == FnKind::Handler { FN } else { BIND };
     serde_json::json!({ k: id })
+}
+
+/// The value of an action prop: `{"$action": {module, func, args}}`.
+pub fn action_marker(module: &str, func: &str, args: Value) -> Value {
+    serde_json::json!({ ACTION: { "module": module, "func": func, "args": args } })
 }
 
 /// Normalize JS-style handler names (`onClick`) to the vocabulary's
@@ -282,7 +342,10 @@ pub struct InstanceSpec<'a> {
     pub limits: Limits,
     pub engines: &'a [Arc<dyn EngineFactory>],
     pub modules: Vec<Arc<dyn Module>>,
+    pub vocabulary: Arc<Vocabulary>,
     pub sink: Sink,
+    /// Backing store for `persist(...)`; `None` = values live with the instance.
+    pub persist: Option<PersistStore>,
 }
 
 /// One loaded extension: an engine, its graph and its exported root.
@@ -311,12 +374,19 @@ impl Instance {
                     known.join(", ")
                 ))
             })?;
+        let mut core =
+            Core::new(spec.name, spec.grants).with_max_resources(spec.limits.max_resources);
+        if let Some(p) = spec.persist {
+            core = core.with_persist(p);
+        }
         let ctx = Rc::new(HostCtx {
-            core: RefCell::new(Core::new(spec.name, spec.grants)),
+            core: RefCell::new(core),
             deadline: Cell::new(Instant::now() + spec.limits.budget),
             limits: spec.limits,
+            vocabulary: spec.vocabulary,
             modules: spec.modules,
             sink: spec.sink,
+            bucket: Cell::new((spec.limits.calls_per_sec as f64, Instant::now())),
         });
         let mut engine = factory.create(ctx.clone())?;
         ctx.arm();
@@ -331,7 +401,7 @@ impl Instance {
         Ok(me)
     }
 
-    /// Resolve every binding and parse the result into the view vocabulary.
+    /// Resolve every binding and validate the result against the vocabulary.
     /// Only dirty bindings re-enter the guest; clean ones reuse their cache.
     pub fn render(&mut self) -> Node {
         self.ctx.arm();
@@ -345,12 +415,14 @@ impl Instance {
             }
         }
         self.collect();
-        match result.and_then(|v| view::parse(v).map_err(|e| GuestError(e.to_string()))) {
+        match result.and_then(|v| {
+            self.ctx
+                .vocabulary
+                .parse(v)
+                .map_err(|e| GuestError(e.to_string()))
+        }) {
             Ok(node) => node,
-            Err(e) => Node::Error {
-                widget: self.name.clone(),
-                message: e.0,
-            },
+            Err(e) => Node::error(&self.name, &e.0),
         }
     }
 
@@ -366,16 +438,30 @@ impl Instance {
                 Ok(())
             }
             Inbound::Callback { f, value } => self.run_untracked(f, value),
+            Inbound::Finished(r) => {
+                self.ctx.core.borrow_mut().finish_resource(r);
+                Ok(())
+            }
         };
         self.collect();
         r
     }
 
-    /// The user triggered a handler (click, scroll, ...).
-    pub fn ui(&mut self, handler: FnId, args: Value) -> Result<(), GuestError> {
-        let r = self.run_untracked(handler, args);
+    /// The user triggered an event prop. Guest functions run as untracked
+    /// handlers; actions go straight to their module without running guest
+    /// code. `payload` is the event data (`null` for clicks).
+    pub fn trigger(&mut self, handler: &Handler, payload: Value) -> Result<(), GuestError> {
+        let r = match handler {
+            Handler::Fn(f) => self.run_untracked(*f, payload),
+            Handler::Action { action } => self.run_action(action, payload),
+        };
         self.collect();
         r
+    }
+
+    /// Shorthand for `trigger(&Handler::Fn(f), payload)`.
+    pub fn ui(&mut self, handler: FnId, payload: Value) -> Result<(), GuestError> {
+        self.trigger(&Handler::Fn(handler), payload)
     }
 
     pub fn take_logs(&mut self) -> Vec<String> {
@@ -387,12 +473,34 @@ impl Instance {
         self.ctx.core.borrow().live_counts()
     }
 
+    pub fn live_resources(&self) -> usize {
+        self.ctx.core.borrow().live_resources()
+    }
+
     fn run_untracked(&mut self, f: FnId, args: Value) -> Result<(), GuestError> {
         self.ctx.arm();
         let prev = self.ctx.core.borrow_mut().enter(Some(f));
         let r = self.engine.call(f, args);
         self.ctx.core.borrow_mut().leave(prev);
         r.map(|_| ())
+    }
+
+    fn run_action(&mut self, action: &Action, payload: Value) -> Result<(), GuestError> {
+        let mut args = action.args.clone();
+        if !payload.is_null() {
+            match &mut args {
+                Value::Object(m) => {
+                    m.insert("event".into(), payload);
+                }
+                Value::Null => args = serde_json::json!({ "event": payload }),
+                _ => {}
+            }
+        }
+        // Owned by the instance root: actions are fire-and-forget.
+        let prev = self.ctx.core.borrow_mut().enter(None);
+        let r = self.ctx.invoke(&action.module, &action.func, args);
+        self.ctx.core.borrow_mut().leave(prev);
+        r.map(|_| ()).map_err(GuestError)
     }
 
     fn collect(&mut self) {
@@ -439,6 +547,7 @@ impl Instance {
                 self.materialize(&raw, depth + 1)?
             }
             Value::Object(m) if m.len() == 1 && m.contains_key(FN) => m[FN].clone(),
+            Value::Object(m) if m.len() == 1 && m.contains_key(ACTION) => v.clone(),
             Value::Object(m) => {
                 let mut out = Map::with_capacity(m.len());
                 for (k, val) in m {

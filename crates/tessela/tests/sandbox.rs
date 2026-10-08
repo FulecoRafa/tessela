@@ -10,10 +10,13 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, unbounded};
 use serde_json::{Value, json};
-use tessela::core::{FnId, Grants, Inbound, Instance, InstanceSpec, Limits, Module, Node, Sink};
+use tessela::core::{
+    FnId, Grants, Handler, Inbound, Instance, InstanceSpec, Limits, Module, Node, PersistStore,
+    Sink, Vocabulary,
+};
 use tessela::proto::{Op, Request, Response, encode};
 use tessela::unix::UnixServices;
-use tessela::view::Tone;
+use tessela::view::ERROR;
 
 fn limits() -> Limits {
     Limits {
@@ -28,12 +31,33 @@ struct Harness {
     inbound: Receiver<Inbound>,
 }
 
+fn text(s: &str) -> Node {
+    Node::new("Text").prop("text", s)
+}
+
+fn fn_id(n: &Node, prop: &str) -> Option<FnId> {
+    match n.handler(prop) {
+        Some(Handler::Fn(id)) => Some(id),
+        _ => None,
+    }
+}
+
 impl Harness {
     fn try_new(
         file: &str,
         src: &str,
         caps: &[&str],
         modules: Vec<Arc<dyn Module>>,
+    ) -> Result<Self, String> {
+        Self::with(file, src, caps, modules, None)
+    }
+
+    fn with(
+        file: &str,
+        src: &str,
+        caps: &[&str],
+        modules: Vec<Arc<dyn Module>>,
+        persist: Option<PersistStore>,
     ) -> Result<Self, String> {
         let (tx, inbound) = unbounded();
         let inst = Instance::new(InstanceSpec {
@@ -44,9 +68,11 @@ impl Harness {
             limits: limits(),
             engines: &tessela::engines(),
             modules,
+            vocabulary: Arc::new(Vocabulary::default()),
             sink: Sink::new(move |i| {
                 let _ = tx.send(i);
             }),
+            persist,
         })
         .map_err(|e| e.0)?;
         Ok(Self { inst, inbound })
@@ -86,7 +112,7 @@ impl Harness {
 fn load_err(file: &str, src: &str) -> String {
     match Harness::try_new(file, src, &[], vec![]) {
         Ok(mut h) => match h.inst.render() {
-            Node::Error { message, .. } => message,
+            n if n.is(ERROR) => n.str("message").unwrap_or("").to_string(),
             other => panic!("expected an error, rendered {other:?}"),
         },
         Err(e) => e,
@@ -94,12 +120,10 @@ fn load_err(file: &str, src: &str) -> String {
 }
 
 fn pill(node: &Node) -> (&str, Option<FnId>) {
-    match node {
-        Node::Pill {
-            label, on_click, ..
-        } => (label, *on_click),
-        Node::Row { children, .. } => pill(&children[0]),
-        other => panic!("not a pill: {other:?}"),
+    match node.kind.as_str() {
+        "Pill" => (node.str("label").unwrap(), fn_id(node, "on_click")),
+        "Row" => pill(&node.children[0]),
+        _ => panic!("not a pill: {node:?}"),
     }
 }
 
@@ -137,17 +161,9 @@ fn counter_behaves(file: &str, src: &str) {
     let tree = h.inst.render();
     let (label, click) = pill(&tree);
     assert_eq!(label, "clicks: 0");
-    let Node::Row { children, gap } = &tree else {
-        panic!()
-    };
-    assert_eq!(*gap, 4.0);
-    assert_eq!(
-        children[1],
-        Node::Text {
-            text: "static".into(),
-            tone: Tone::Muted
-        }
-    );
+    assert!(tree.is("Row"));
+    assert_eq!(tree.f32("gap"), Some(4.0));
+    assert_eq!(tree.children[1], text("static").prop("tone", "muted"));
     assert_eq!(h.logs(), ["label"]);
 
     // Nothing changed: re-render must not re-enter the guest.
@@ -186,7 +202,7 @@ end
     assert_eq!(label, "off");
     let click = click.unwrap();
     h.inst.ui(click, Value::Null).unwrap();
-    assert!(matches!(h.inst.render(), Node::Pill { active: true, .. }));
+    assert!(h.inst.render().bool("active"));
     // The old click handler was owned by the previous render and is gone.
     assert!(h.inst.ui(click, Value::Null).is_err());
 }
@@ -211,19 +227,16 @@ export default () => (
         h.inst.ui(handler, Value::Null).unwrap();
         h.inst.render();
     }
-    let Node::Column { children, .. } = h.inst.render() else {
-        panic!()
-    };
-    assert_eq!(children.len(), 53);
+    assert_eq!(h.inst.render().children.len(), 53);
     // One label binding per item plus the list binding; nothing from older renders.
     assert_eq!(h.inst.live_counts(), (53 + 1, 1));
 }
 
 fn first_button(n: &Node) -> FnId {
-    match n {
-        Node::Column { children, .. } => first_button(&children[0]),
-        Node::Button { on_click, .. } => on_click.unwrap(),
-        other => panic!("{other:?}"),
+    match n.kind.as_str() {
+        "Column" => first_button(&n.children[0]),
+        "Button" => fn_id(n, "on_click").unwrap(),
+        _ => panic!("{n:?}"),
     }
 }
 
@@ -353,7 +366,7 @@ fn dropping_an_instance_releases_subscriptions() {
         &["service:power"],
         vec![services],
     );
-    h.pump_until(|n| matches!(n, Node::Text { text, .. } if text == "87"));
+    h.pump_until(|n| n.str("text") == Some("87"));
     assert_eq!(
         ops.recv_timeout(Duration::from_secs(2)).unwrap(),
         "Subscribe"
@@ -385,13 +398,7 @@ table.sort(leaked)
 return Text { text = "leaked:" .. table.concat(leaked, ",") }
 "#,
     );
-    assert_eq!(
-        h.inst.render(),
-        Node::Text {
-            text: "leaked:".into(),
-            tone: Tone::Normal
-        }
-    );
+    assert_eq!(h.inst.render(), text("leaked:"));
 }
 
 #[test]
@@ -405,13 +412,7 @@ const probes = ["require", "process", "fetch", "XMLHttpRequest", "setTimeout", "
 export default <Text text={"leaked:" + probes.filter((p) => g[p] !== undefined).join(",")} />;
 "#,
     );
-    assert_eq!(
-        h.inst.render(),
-        Node::Text {
-            text: "leaked:".into(),
-            tone: Tone::Normal
-        }
-    );
+    assert_eq!(h.inst.render(), text("leaked:"));
 }
 
 #[test]
@@ -489,13 +490,7 @@ fn prelude_is_read_only() {
         "x.tsx",
         r#"try { (globalThis as any).signal = () => 1; } catch {} export default <Text text={typeof signal} />;"#,
     );
-    assert_eq!(
-        h.inst.render(),
-        Node::Text {
-            text: "function".into(),
-            tone: Tone::Normal
-        }
-    );
+    assert_eq!(h.inst.render(), text("function"));
 }
 
 // ---------------------------------------------------------------- sandbox: resources

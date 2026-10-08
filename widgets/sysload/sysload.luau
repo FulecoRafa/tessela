@@ -1,5 +1,7 @@
--- CPU load and memory meters, fine-grained style: each prop that reads a
--- signal is a function, and only that prop re-runs when its signal changes.
+-- CPU load and memory meters. `Meter` is a component the shell registers
+-- (apps/marathon); renderers that do not draw it get its fallback.
+-- Fine-grained style: each prop that reads a signal is a function, and only
+-- that prop re-runs when its signal changes.
 
 local sys = use("sys")
 local load = sys:subscribe("load")
@@ -14,16 +16,16 @@ end
 
 return Row {
 	gap = 4,
-	Icon "cpu",
-	Progress {
+	Meter {
+		icon = "cpu",
 		value = ratio(load),
 		label = function()
 			local v = load()
 			return if v then string.format("%.2f", v.load1) else "…"
 		end,
 	},
-	Icon "memory",
-	Progress {
+	Meter {
+		icon = "memory",
 		value = ratio(mem),
 		label = function()
 			local m = mem()

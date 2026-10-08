@@ -8,19 +8,20 @@
 
 use std::time::Duration;
 
-use crossbeam_channel::Sender;
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
-    AnyElement, App, Bounds, Context, ElementId, FontWeight, Hsla, IntoElement, ParentElement,
-    Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Size, Styled, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*,
-    px, rgb,
+    AnyElement, App, Bounds, Context, Div, ElementId, FontWeight, Hsla, IntoElement, MouseButton,
+    ParentElement, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Size, Stateful,
+    Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div,
+    point, prelude::*, px, rgb,
 };
-use tessela_host::{Frame, Renderer, Surface, UiEvent};
+use serde_json::Value;
+use tessela_host::{Frame, Renderer, Slot, Surface, Trees, UiEvent};
+use tessela_view::patch::Retained;
 use tessela_view::text::{icon, short_error};
-use tessela_view::{Node, Tone};
+use tessela_view::{ERROR, Handler, NodeId, Tone, ViewTree};
 
 /// Renders since start; `TESSELA_FRAME_STATS=1` logs the rate every 5 s.
 static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -55,20 +56,20 @@ fn palette() -> Palette {
 
 struct Bar {
     title: Option<String>,
-    widgets: Vec<Sender<UiEvent>>,
-    tree: Vec<Option<Node>>,
+    slots: Vec<Slot>,
+    trees: Trees,
 }
 
 impl Bar {
     fn new(
         title: Option<String>,
-        widgets: Vec<Sender<UiEvent>>,
+        slots: Vec<Slot>,
         mut frames: UnboundedReceiver<Frame>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Event-driven: the UI thread sleeps until a widget emits a frame, then
-        // takes everything queued and notifies once. GPUI coalesces notifies
-        // into the next compositor frame, so 100 updates/s cost at most 60 renders.
+        // Event-driven: the UI thread sleeps until an extension emits a frame,
+        // then takes everything queued and notifies once. GPUI coalesces
+        // notifies into the next compositor frame.
         cx.spawn(async move |this, cx| {
             while let Some(first) = frames.next().await {
                 let mut batch = vec![first];
@@ -76,8 +77,8 @@ impl Bar {
                     batch.push(f);
                 }
                 let alive = this.update(cx, |bar, cx| {
-                    for f in batch {
-                        bar.tree[f.slot] = Some(f.node);
+                    for f in &batch {
+                        bar.trees.apply(f);
                     }
                     cx.notify();
                 });
@@ -87,11 +88,11 @@ impl Bar {
             }
         })
         .detach();
-        let n = widgets.len();
+        let n = slots.len();
         Self {
             title,
-            widgets,
-            tree: vec![None; n],
+            slots,
+            trees: Trees::new(n),
         }
     }
 }
@@ -121,9 +122,10 @@ impl Render for Bar {
                         .child(title),
                 )
             });
-        for (slot, node) in self.tree.iter().enumerate() {
-            let el = match node {
-                Some(n) => element(n, slot, &self.widgets[slot], &p),
+        for (slot, ui) in self.slots.iter().enumerate() {
+            let tree = self.trees.tree(slot);
+            let el = match tree.and_then(|t| t.root().map(|r| (t, r))) {
+                Some((t, root)) => element(t, root, slot, ui, &p),
                 None => div().text_color(p.muted).child("…").into_any_element(),
             };
             bar = bar.child(el);
@@ -142,8 +144,10 @@ fn tone(t: Tone, p: &Palette) -> Hsla {
     }
 }
 
-fn id(slot: usize, handler: u64) -> ElementId {
-    ElementId::Name(SharedString::from(format!("w{slot}-h{handler}")))
+/// Element ids come from node ids, which the reconciler keeps stable, so
+/// hover and press state survive re-renders.
+fn id(slot: usize, node: NodeId) -> ElementId {
+    ElementId::Name(SharedString::from(format!("s{slot}-n{node}")))
 }
 
 fn scroll_delta(e: &ScrollWheelEvent) -> i32 {
@@ -160,41 +164,115 @@ fn scroll_delta(e: &ScrollWheelEvent) -> i32 {
     }
 }
 
-fn element(node: &Node, slot: usize, ui: &Sender<UiEvent>, p: &Palette) -> AnyElement {
-    match node {
-        Node::Row { gap, children } | Node::Column { gap, children } => {
-            let base = div().flex().items_center().gap(px(*gap));
-            let base = if matches!(node, Node::Column { .. }) {
+struct P<'a>(&'a Retained);
+
+impl P<'_> {
+    fn str(&self, k: &str) -> Option<String> {
+        self.0
+            .props
+            .get(k)
+            .and_then(Value::as_str)
+            .map(String::from)
+    }
+    fn f32(&self, k: &str) -> Option<f32> {
+        self.0
+            .props
+            .get(k)
+            .and_then(Value::as_f64)
+            .map(|v| v as f32)
+    }
+    fn bool(&self, k: &str) -> bool {
+        self.0
+            .props
+            .get(k)
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+    fn tone(&self) -> Tone {
+        self.str("tone")
+            .and_then(|t| Tone::parse(&t))
+            .unwrap_or_default()
+    }
+    fn handler(&self, k: &str) -> Option<Handler> {
+        self.0.props.get(k).and_then(Handler::from_value)
+    }
+}
+
+/// Wire the event props of `n` onto an interactive element.
+fn interactive(mut el: Stateful<Div>, n: &P<'_>, ui: &Slot) -> Stateful<Div> {
+    if let Some(h) = n.handler("on_click") {
+        let ui = ui.clone();
+        el = el
+            .cursor_pointer()
+            .hover(|s| s.opacity(0.85))
+            .on_click(move |_, _, _| ui.send(UiEvent::new(h.clone(), Value::Null)));
+    }
+    if let Some(h) = n.handler("on_press") {
+        let ui = ui.clone();
+        el = el.on_mouse_down(MouseButton::Left, move |_, _, _| {
+            ui.send(UiEvent::new(h.clone(), Value::Null))
+        });
+    }
+    if let Some(h) = n.handler("on_release") {
+        let ui = ui.clone();
+        el = el.on_mouse_up(MouseButton::Left, move |_, _, _| {
+            ui.send(UiEvent::new(h.clone(), Value::Null))
+        });
+    }
+    if let Some(h) = n.handler("on_scroll") {
+        let ui = ui.clone();
+        el = el.on_scroll_wheel(move |e, _, _| {
+            let d = scroll_delta(e);
+            if d != 0 {
+                ui.send(UiEvent::new(h.clone(), serde_json::json!({ "delta": d })));
+            }
+        });
+    }
+    el
+}
+
+fn element(tree: &ViewTree, nid: NodeId, slot: usize, ui: &Slot, p: &Palette) -> AnyElement {
+    let Some(r) = tree.get(nid) else {
+        return div().into_any_element();
+    };
+    let n = P(r);
+    match r.kind.as_str() {
+        "Row" | "Column" => {
+            let base = div()
+                .flex()
+                .items_center()
+                .gap(px(n.f32("gap").unwrap_or(0.0)));
+            let base = if r.kind == "Column" {
                 base.flex_col()
             } else {
                 base.flex_row()
             };
-            base.children(children.iter().map(|c| element(c, slot, ui, p)))
+            base.children(r.children.iter().map(|c| element(tree, *c, slot, ui, p)))
                 .into_any_element()
         }
-        Node::Text { text, tone: t } => div()
-            .text_color(tone(*t, p))
-            .child(text.clone())
+        "Text" => div()
+            .text_color(tone(n.tone(), p))
+            .child(n.str("text").unwrap_or_default())
             .into_any_element(),
-        Node::Icon { name } => div()
-            .text_color(p.accent)
-            .child(icon(name))
-            .into_any_element(),
-        Node::Pill {
-            icon: ic,
-            label,
-            active,
-            on_click,
-            on_scroll,
-        } => {
-            let (bg, fg) = if *active {
+        "Icon" => {
+            let color = if r.props.contains_key("tone") {
+                tone(n.tone(), p)
+            } else {
+                p.accent
+            };
+            div()
+                .text_color(color)
+                .child(icon(&n.str("name").unwrap_or_default()))
+                .into_any_element()
+        }
+        "Pill" => {
+            let (bg, fg) = if n.bool("active") {
                 (p.cyan, p.bg)
             } else {
                 (p.pill, p.fg)
             };
-            let handler = on_click.or(*on_scroll).unwrap_or(0);
-            let mut pill = div()
-                .id(id(slot, handler))
+            let pill = div()
+                .id(id(slot, nid))
                 .flex()
                 .items_center()
                 .gap_1()
@@ -203,44 +281,20 @@ fn element(node: &Node, slot: usize, ui: &Sender<UiEvent>, p: &Palette) -> AnyEl
                 .rounded_full()
                 .bg(bg)
                 .text_color(fg)
-                .when_some(ic.as_ref(), |d, i| d.child(icon(i)))
-                .child(label.clone());
-            if let Some(h) = *on_click {
-                let tx = ui.clone();
-                pill = pill
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.85))
-                    .on_click(move |_, _, _| {
-                        let _ = tx.send(UiEvent::Click(h));
-                    });
-            }
-            if let Some(h) = *on_scroll {
-                let tx = ui.clone();
-                pill = pill.on_scroll_wheel(move |e, _, _| {
-                    let d = scroll_delta(e);
-                    if d != 0 {
-                        let _ = tx.send(UiEvent::Scroll(h, d));
-                    }
-                });
-            }
-            pill.into_any_element()
+                .when_some(n.str("icon"), |d, i| d.child(icon(&i)))
+                .child(n.str("label").unwrap_or_default());
+            interactive(pill, &n, ui).into_any_element()
         }
-        Node::Button { label, on_click } => {
-            let mut b = div()
-                .id(id(slot, on_click.unwrap_or(0)))
+        "Button" => {
+            let b = div()
+                .id(id(slot, nid))
                 .px_2()
                 .text_color(p.accent)
-                .child(label.clone());
-            if let Some(h) = *on_click {
-                let tx = ui.clone();
-                b = b.cursor_pointer().on_click(move |_, _, _| {
-                    let _ = tx.send(UiEvent::Click(h));
-                });
-            }
-            b.into_any_element()
+                .child(n.str("label").unwrap_or_default());
+            interactive(b, &n, ui).into_any_element()
         }
-        Node::Progress { value, label } => {
-            let v = value.clamp(0.0, 1.0);
+        "Progress" => {
+            let v = n.f32("value").unwrap_or(0.0).clamp(0.0, 1.0);
             let fill = if v > 0.85 {
                 p.crit
             } else if v > 0.6 {
@@ -252,7 +306,7 @@ fn element(node: &Node, slot: usize, ui: &Sender<UiEvent>, p: &Palette) -> AnyEl
                 .flex()
                 .items_center()
                 .gap_1()
-                .when_some(label.as_ref(), |d, l| d.child(l.clone()))
+                .when_some(n.str("label"), |d, l| d.child(l))
                 .child(
                     div()
                         .w(px(48.0))
@@ -263,11 +317,18 @@ fn element(node: &Node, slot: usize, ui: &Sender<UiEvent>, p: &Palette) -> AnyEl
                 )
                 .into_any_element()
         }
-        Node::Spacer => div().flex_1().into_any_element(),
-        Node::Error { widget, message } => div()
+        "Spacer" => div().flex_1().into_any_element(),
+        ERROR => div()
             .text_color(p.crit)
             .font_weight(FontWeight::BOLD)
-            .child(short_error(widget, message))
+            .child(short_error(
+                &n.str("widget").unwrap_or_default(),
+                &n.str("message").unwrap_or_default(),
+            ))
+            .into_any_element(),
+        other => div()
+            .text_color(p.crit)
+            .child(format!("⚠ {other}"))
             .into_any_element(),
     }
 }
@@ -317,7 +378,7 @@ impl Renderer for LayerBar {
                 }
             });
         }
-        let Surface { slots, frames } = surface;
+        let Surface { slots, frames, .. } = surface;
         // Bridge the extension threads' channel into an async stream the UI can await.
         let (tx, rx) = unbounded();
         std::thread::Builder::new()
@@ -331,7 +392,6 @@ impl Renderer for LayerBar {
             })
             .expect("spawn frame bridge");
         let mut rx = Some(rx);
-        let senders: Vec<Sender<UiEvent>> = slots.into_iter().map(|s| s.ui).collect();
         let LayerBar {
             app_id,
             namespace,
@@ -358,9 +418,9 @@ impl Renderer for LayerBar {
                 }),
                 ..Default::default()
             };
-            let (title, senders) = (title.clone(), senders.clone());
+            let (title, slots) = (title.clone(), slots.clone());
             if let Err(e) = cx.open_window(options, |_, cx| {
-                cx.new(|cx| Bar::new(title, senders, rx.take().expect("one window"), cx))
+                cx.new(|cx| Bar::new(title, slots, rx.take().expect("one window"), cx))
             }) {
                 log::error!(
                     "could not open the bar (does the compositor support layer-shell?): {e}"
