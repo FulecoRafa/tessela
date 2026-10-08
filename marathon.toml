@@ -1,0 +1,13 @@
+# Bar layout and where to find things. Paths are relative to this file.
+
+widgets_dir = "widgets"
+
+# Every `<name>.sock` in this directory is a service named `<name>`.
+# Omit to use $XDG_RUNTIME_DIR/marathon/services (what the SDKs default to).
+services_dir = "run/services"
+
+# Widget directories, left to right. Add "intruder" to try the sandbox.
+bar = ["clock", "sysload", "battery", "profile"]
+
+# Sockets that live elsewhere: name = "/absolute/path.sock"
+[services]

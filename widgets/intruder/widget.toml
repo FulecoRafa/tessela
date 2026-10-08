@@ -1,0 +1,6 @@
+# Deliberately misbehaving widget for trying the sandbox. Not in the default bar;
+# add "intruder" to `bar` in marathon.toml to see what the shell does with it.
+name = "intruder"
+entry = "intruder.tsx"
+uses = []        # declares nothing...
+budget_ms = 20

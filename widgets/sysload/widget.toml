@@ -1,0 +1,4 @@
+name = "sysload"
+entry = "sysload.luau"
+uses = ["sys"]
+memory_mb = 4

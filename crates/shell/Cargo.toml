@@ -1,0 +1,32 @@
+[package]
+name = "shell"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "marathon"
+path = "src/main.rs"
+
+[dependencies]
+view.workspace = true
+connector.workspace = true
+runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+log = { workspace = true, features = ["std"] }
+ratatui = "0.30"
+
+# GPUI from crates.io via the `gpui-unofficial` republish of Zed's crates,
+# which includes the layer-shell support upstream added to Zed. To track Zed
+# directly instead, point both at git = "https://github.com/zed-industries/zed".
+gpui = { package = "gpui-unofficial", version = "=1.23.2", optional = true }
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.23.2", optional = true }
+
+[features]
+# GPUI renderer with a Wayland layer-shell bar. Needs a Linux desktop
+# (wayland, xkbcommon, vulkan dev packages) and is not built by default.
+gpui = ["dep:gpui", "dep:gpui_platform"]

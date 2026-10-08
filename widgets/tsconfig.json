@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "strict": true,
+    "noEmit": true,
+    "lib": ["ES2023"],
+    "types": []
+  },
+  "include": ["**/*.tsx", "marathon.d.ts"]
+}

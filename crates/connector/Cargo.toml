@@ -1,0 +1,13 @@
+[package]
+name = "connector"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true
+anyhow.workspace = true
