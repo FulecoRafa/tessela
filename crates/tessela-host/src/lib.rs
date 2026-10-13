@@ -12,6 +12,7 @@
 
 mod headless;
 mod manifest;
+mod sources;
 mod worker;
 
 use std::collections::HashSet;
@@ -25,6 +26,9 @@ use tessela_core::{EngineFactory, Handler, Module, Node};
 
 pub use headless::Headless;
 pub use manifest::Manifest;
+pub use sources::Entry;
+
+use sources::Origin;
 
 /// Changes to one slot's tree, as patches with stable node ids
 /// (docs/adr/0011). Apply them with [`Trees`].
@@ -132,7 +136,7 @@ pub struct AppBuilder {
     engines: Vec<Arc<dyn EngineFactory>>,
     modules: Vec<Arc<dyn Module>>,
     vocabulary: Vocabulary,
-    extensions: Vec<PathBuf>,
+    extensions: Vec<Origin>,
     workers: usize,
 }
 
@@ -181,7 +185,14 @@ impl AppBuilder {
 
     /// A directory with `widget.toml`; becomes the next slot.
     pub fn extension(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.extensions.push(dir.into());
+        self.extensions.push(Origin::Widget(dir.into()));
+        self
+    }
+
+    /// An entry of a project (docs/adr/0015); becomes the next slot. Its
+    /// file may import other files under `entry.root`.
+    pub fn entry(mut self, entry: Entry) -> Self {
+        self.extensions.push(Origin::Entry(entry));
         self
     }
 
@@ -210,7 +221,7 @@ pub struct App {
     engines: Vec<Arc<dyn EngineFactory>>,
     modules: Vec<Arc<dyn Module>>,
     vocabulary: Arc<Vocabulary>,
-    extensions: Vec<PathBuf>,
+    extensions: Vec<Origin>,
     workers: usize,
 }
 

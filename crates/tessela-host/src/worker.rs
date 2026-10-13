@@ -19,7 +19,8 @@ use tessela_core::{
     EngineFactory, Inbound, Instance, InstanceSpec, Module, Node, PersistStore, Sink,
 };
 
-use crate::{Frame, Manifest, Slot, UiEvent};
+use crate::sources::{FileSources, Origin};
+use crate::{Frame, Slot, UiEvent};
 
 pub(crate) struct Shared {
     pub engines: Vec<Arc<dyn EngineFactory>>,
@@ -44,26 +45,21 @@ pub(crate) enum Msg {
 /// Returns the slots and the number of worker threads started.
 pub(crate) fn spawn_pool(
     shared: Arc<Shared>,
-    dirs: Vec<PathBuf>,
+    origins: Vec<Origin>,
     workers: usize,
 ) -> (Vec<Slot>, usize) {
-    let workers = workers.min(dirs.len().max(1));
+    let workers = workers.min(origins.len().max(1));
     let channels: Vec<(Sender<Msg>, Receiver<Msg>)> = (0..workers).map(|_| unbounded()).collect();
-    let mut assigned: Vec<Vec<(usize, PathBuf)>> = vec![Vec::new(); workers];
-    let mut slots = Vec::with_capacity(dirs.len());
-    for (index, dir) in dirs.into_iter().enumerate() {
+    let mut assigned: Vec<Vec<(usize, Origin)>> = vec![Vec::new(); workers];
+    let mut slots = Vec::with_capacity(origins.len());
+    for (index, origin) in origins.into_iter().enumerate() {
         let w = index % workers;
-        let name = dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
         slots.push(Slot {
-            name,
+            name: origin.name(),
             index,
             tx: channels[w].0.clone(),
         });
-        assigned[w].push((index, dir));
+        assigned[w].push((index, origin));
     }
     for (w, ((tx, rx), exts)) in channels.into_iter().zip(assigned).enumerate() {
         let shared = shared.clone();
@@ -85,7 +81,7 @@ fn stamp(files: &[PathBuf]) -> Vec<Option<SystemTime>> {
 
 struct Ext {
     slot: usize,
-    dir: PathBuf,
+    origin: Origin,
     name: String,
     inst: Option<Instance>,
     generation: u64,
@@ -103,17 +99,13 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(shared: Arc<Shared>, me: Sender<Msg>, assigned: Vec<(usize, PathBuf)>) -> Self {
+    fn new(shared: Arc<Shared>, me: Sender<Msg>, assigned: Vec<(usize, Origin)>) -> Self {
         let exts = assigned
             .into_iter()
-            .map(|(slot, dir)| Ext {
+            .map(|(slot, origin)| Ext {
                 slot,
-                name: dir
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-                dir,
+                name: origin.name(),
+                origin,
                 inst: None,
                 generation: 0,
                 watched: Vec::new(),
@@ -221,7 +213,6 @@ impl Worker {
         // Drop the old instance first: it releases its module resources.
         ext.inst = None;
         ext.generation += 1;
-        ext.watched = vec![ext.dir.join("widget.toml")];
         let (slot, generation) = (ext.slot, ext.generation);
         let sink = Sink::new(move |inbound| {
             let _ = me.send(Msg::Inbound {
@@ -230,30 +221,36 @@ impl Worker {
                 inbound,
             });
         });
+        let mut watched = Vec::new();
         let result = (|| -> Result<Instance, String> {
-            let manifest = Manifest::load(&ext.dir).map_err(|e| format!("manifest: {e}"))?;
-            ext.watched.push(manifest.entry.clone());
-            let source = std::fs::read_to_string(&manifest.entry).map_err(|e| e.to_string())?;
-            let file = manifest
-                .entry
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            Instance::new(InstanceSpec {
-                name: &manifest.name,
-                file: &file,
+            let r = ext.origin.resolve()?;
+            watched.extend(r.config);
+            watched.push(r.root.join(&r.file));
+            let sources = Arc::new(FileSources::new(&r.root));
+            let read = sources.clone();
+            let source = tessela_core::Sources::read(&*sources, &r.file)
+                .ok_or_else(|| format!("cannot read {}", r.root.join(&r.file).display()))?;
+            let inst = Instance::new(InstanceSpec {
+                name: &r.name,
+                file: &r.file,
                 source: &source,
-                grants: manifest.grants(),
-                limits: manifest.limits(),
+                grants: r.grants,
+                limits: r.limits,
                 engines: &shared.engines,
                 modules: shared.modules.clone(),
                 vocabulary: shared.vocabulary.clone(),
                 sink,
                 persist: Some(ext.persist.clone()),
-            })
-            .map_err(|e| e.0)
+                sources: Some(sources),
+            });
+            // Imports read so far are watched even if loading failed, so
+            // fixing any of them reloads.
+            watched.extend(read.read_files());
+            inst.map_err(|e| e.0)
         })();
+        watched.sort();
+        watched.dedup();
+        ext.watched = watched;
         ext.loaded_at = stamp(&ext.watched);
         match result {
             Ok(mut inst) => {

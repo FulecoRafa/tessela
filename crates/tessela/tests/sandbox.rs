@@ -73,6 +73,7 @@ impl Harness {
                 let _ = tx.send(i);
             }),
             persist,
+            sources: None,
         })
         .map_err(|e| e.0)?;
         Ok(Self { inst, inbound })
@@ -587,4 +588,74 @@ fn unknown_file_types_name_the_engines() {
         err.contains("no engine for '.py'") && err.contains("luau") && err.contains("quickjs"),
         "{err}"
     );
+}
+
+/// Project files, as the host would serve them (it also refuses symlinks out
+/// of the root; see tessela-host).
+struct MapSources(std::collections::HashMap<String, String>);
+
+impl tessela::core::Sources for MapSources {
+    fn read(&self, path: &str) -> Option<String> {
+        self.0.get(path).cloned()
+    }
+}
+
+fn project(entry: &str, files: &[(&str, &str)]) -> Result<Node, String> {
+    let sources: std::collections::HashMap<String, String> = files
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let source = sources[entry].clone();
+    let mut inst = Instance::new(InstanceSpec {
+        name: "project",
+        file: entry,
+        source: &source,
+        grants: Grants::new([]),
+        limits: limits(),
+        engines: &tessela::engines(),
+        modules: vec![],
+        vocabulary: Arc::new(Vocabulary::default()),
+        sink: Sink::none(),
+        persist: None,
+        sources: Some(Arc::new(MapSources(sources))),
+    })
+    .map_err(|e| e.0)?;
+    Ok(inst.render())
+}
+
+#[test]
+fn js_imports_resolve_inside_the_project_only() {
+    let files = [
+        (
+            "src/main.tsx",
+            r#"import { Tile } from "../lib/tile"; import { n } from "./n"; export default <Tile label={`x${n}`} />;"#,
+        ),
+        ("src/n.ts", "export const n: number = 2;"),
+        (
+            "lib/tile.tsx",
+            r#"export function Tile(p: { label: string }) { return <Text text={p.label} />; }"#,
+        ),
+        (
+            "escape.tsx",
+            r#"import x from "../outside"; export default <Text text={String(x)} />;"#,
+        ),
+        (
+            "bare.tsx",
+            r#"import x from "fs"; export default <Text text={String(x)} />;"#,
+        ),
+        (
+            "missing.tsx",
+            r#"import x from "./nope"; export default <Text text={String(x)} />;"#,
+        ),
+    ];
+    let node = project("src/main.tsx", &files).unwrap();
+    assert_eq!(node.str("text"), Some("x2"));
+    for (entry, needle) in [
+        ("escape.tsx", "outside the project"),
+        ("bare.tsx", "only relative imports"),
+        ("missing.tsx", "cannot find"),
+    ] {
+        let err = project(entry, &files).unwrap_err();
+        assert!(err.contains(needle), "{entry}: {err}");
+    }
 }

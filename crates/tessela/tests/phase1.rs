@@ -48,6 +48,7 @@ fn build(
             let _ = tx.send(i);
         }),
         persist,
+        sources: None,
     })
     .map_err(|e| e.0)?;
     Ok(H { inst, inbound })

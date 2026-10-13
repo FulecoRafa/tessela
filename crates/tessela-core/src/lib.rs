@@ -186,6 +186,47 @@ impl ModuleCx<'_> {
     }
 }
 
+// ---------------------------------------------------------------- sources
+
+/// The files an entry may import, by path relative to its root (`src/a.tsx`).
+/// The host implements this — reading files, remembering them for hot reload —
+/// so neither the core nor the engines touch the filesystem.
+pub trait Sources: Send + Sync {
+    fn read(&self, path: &str) -> Option<String>;
+}
+
+/// File extensions tried, in order, for an import without one.
+pub const IMPORT_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js", "luau", "lua"];
+
+/// Resolve `spec`, imported from the file `base`, to a path relative to the
+/// root. Only relative imports exist, and they cannot leave the root.
+pub fn resolve_import(base: &str, spec: &str) -> Result<String, String> {
+    if !(spec.starts_with("../") || spec.starts_with("./")) {
+        return Err(format!(
+            "cannot import '{spec}': only relative imports of project files exist"
+        ));
+    }
+    let mut parts: Vec<&str> = base.split('/').collect();
+    parts.pop(); // the importing file itself
+    for part in spec.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Err(format!(
+                        "cannot import '{spec}' from '{base}': outside the project"
+                    ));
+                }
+            }
+            p => parts.push(p),
+        }
+    }
+    if parts.is_empty() {
+        return Err(format!("cannot import '{spec}'"));
+    }
+    Ok(parts.join("/"))
+}
+
 // ---------------------------------------------------------------- engines
 
 /// Shared between an [`Instance`] and its engine.
@@ -197,6 +238,7 @@ pub struct HostCtx {
     modules: Vec<Arc<dyn Module>>,
     sink: Sink,
     bucket: Cell<(f64, Instant)>,
+    sources: Option<Arc<dyn Sources>>,
 }
 
 impl HostCtx {
@@ -207,6 +249,18 @@ impl HostCtx {
 
     fn arm(&self) {
         self.deadline.set(Instant::now() + self.limits.budget);
+    }
+
+    /// Restart the CPU budget. For engines, after host work done on the
+    /// guest's behalf (loading and transpiling an imported file): that time
+    /// is not guest CPU.
+    pub fn rearm(&self) {
+        self.arm();
+    }
+
+    /// Project files this instance may import; `None` = imports are refused.
+    pub fn sources(&self) -> Option<&Arc<dyn Sources>> {
+        self.sources.as_ref()
     }
 
     /// Components guests may construct, for the engines' preludes.
@@ -346,6 +400,8 @@ pub struct InstanceSpec<'a> {
     pub sink: Sink,
     /// Backing store for `persist(...)`; `None` = values live with the instance.
     pub persist: Option<PersistStore>,
+    /// Files the entry may import; `None` = a single-file extension.
+    pub sources: Option<Arc<dyn Sources>>,
 }
 
 /// One loaded extension: an engine, its graph and its exported root.
@@ -387,6 +443,7 @@ impl Instance {
             modules: spec.modules,
             sink: spec.sink,
             bucket: Cell::new((spec.limits.calls_per_sec as f64, Instant::now())),
+            sources: spec.sources,
         });
         let mut engine = factory.create(ctx.clone())?;
         ctx.arm();
@@ -571,5 +628,24 @@ impl Drop for Instance {
         // Unsubscribe, cancel timers... everything the extension still holds.
         self.ctx.core.borrow_mut().dispose_all();
         self.release_resources();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_import;
+
+    #[test]
+    fn imports_resolve_inside_the_root() {
+        assert_eq!(
+            resolve_import("src/surfaces/bar.tsx", "../components/Tile").unwrap(),
+            "src/components/Tile"
+        );
+        assert_eq!(resolve_import("src/a.ts", "./b").unwrap(), "src/b");
+        assert_eq!(resolve_import("a.ts", "./lib/x.ts").unwrap(), "lib/x.ts");
+        assert!(resolve_import("src/a.ts", "../../etc/passwd").is_err());
+        assert!(resolve_import("a.ts", "../x").is_err());
+        assert!(resolve_import("a.ts", "fs").is_err());
+        assert!(resolve_import("a.ts", "/etc/passwd").is_err());
     }
 }

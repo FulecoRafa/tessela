@@ -44,7 +44,7 @@ thiserror = "2"
 crossbeam-channel = "0.5"
 log = { version = "0.4", features = ["std"] }
 mlua = { version = "0.12", features = ["luau", "vendored"] }
-rquickjs = { version = "0.14", features = ["classes"] }
+rquickjs = { version = "0.14", features = ["classes", "loader"] }
 oxc = { version = "0.153", features = ["transformer", "codegen", "semantic"] }
 ratatui = "0.30"
 futures = "0.3"

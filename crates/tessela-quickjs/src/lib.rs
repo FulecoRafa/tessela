@@ -1,20 +1,26 @@
 //! JavaScript/TSX engine (QuickJS-NG via rquickjs, TSX via oxc).
 //!
 //! The source is transpiled on the host (types stripped, JSX turned into
-//! `h(...)` calls) and evaluated as an ES module with **no module loader**:
-//! any `import` fails, so the extension sees only the frozen globals defined
-//! by the preludes. QuickJS has no `fetch`, `fs` or timers unless the embedder
-//! adds them; everything of that kind comes from modules.
+//! `h(...)` calls) and evaluated as an ES module. Without [`Sources`] there is
+//! **no module loader**: any `import` fails, so the extension sees only the
+//! frozen globals defined by the preludes. With them, relative imports of the
+//! extension's own files work — resolved inside its root by the host, never
+//! reaching the filesystem from here — and nothing else does. QuickJS has no
+//! `fetch`, `fs` or timers unless the embedder adds them; everything of that
+//! kind comes from modules.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
+use rquickjs::module::Declared;
 use rquickjs::{Context, Ctx, Function, Module, Persistent, Runtime, Type, Value as JsValue};
 use serde_json::{Map, Number, Value};
 use tessela_core::{
-    Engine, EngineFactory, FnId, GuestError, HostCtx, Lang, fn_kind, marker, prop_key,
+    Engine, EngineFactory, FnId, GuestError, HostCtx, IMPORT_EXTENSIONS, Lang, Sources, fn_kind,
+    marker, prop_key, resolve_import,
 };
 
 const PRELUDE: &str = include_str!("prelude.js");
@@ -121,6 +127,83 @@ fn exception(ctx: &Ctx<'_>, e: rquickjs::Error) -> GuestError {
 
 fn throw(ctx: &Ctx<'_>, msg: impl std::fmt::Display) -> rquickjs::Error {
     rquickjs::Exception::throw_message(ctx, &msg.to_string())
+}
+
+/// Resolves and loads `import`s through the host's [`Sources`]. Files found
+/// while resolving are kept until loaded, so each one is read once.
+struct ProjectLoader {
+    host: Rc<HostCtx>,
+    sources: std::sync::Arc<dyn Sources>,
+    found: Rc<RefCell<HashMap<String, String>>>,
+}
+
+impl ProjectLoader {
+    fn find(&self, target: &str) -> Option<(String, String)> {
+        let has_ext = Path::new(target)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| JS_EXTENSIONS.contains(&e));
+        let mut candidates = Vec::new();
+        if has_ext {
+            candidates.push(target.to_string());
+        }
+        for ext in IMPORT_EXTENSIONS
+            .iter()
+            .filter(|e| JS_EXTENSIONS.contains(e))
+        {
+            candidates.push(format!("{target}.{ext}"));
+        }
+        for ext in IMPORT_EXTENSIONS
+            .iter()
+            .filter(|e| JS_EXTENSIONS.contains(e))
+        {
+            candidates.push(format!("{target}/index.{ext}"));
+        }
+        candidates
+            .into_iter()
+            .find_map(|c| self.sources.read(&c).map(|s| (c, s)))
+    }
+}
+
+const JS_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js"];
+
+impl Resolver for ProjectLoader {
+    fn resolve<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        let target = resolve_import(base, name).map_err(|e| throw(ctx, e))?;
+        let (path, source) = self
+            .find(&target)
+            .ok_or_else(|| throw(ctx, format!("cannot find '{name}' (imported from {base})")))?;
+        self.found.borrow_mut().insert(path.clone(), source);
+        Ok(path)
+    }
+}
+
+impl Loader for ProjectLoader {
+    fn load<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<Module<'js, Declared>> {
+        let source = match self.found.borrow_mut().remove(name) {
+            Some(s) => s,
+            None => self
+                .sources
+                .read(name)
+                .ok_or_else(|| throw(ctx, format!("cannot load '{name}'")))?,
+        };
+        let code = transpile(&source, name).map_err(|e| throw(ctx, e))?;
+        let module = Module::declare(ctx.clone(), name, code)?;
+        // Reading and transpiling ran on the host; it is not guest CPU time.
+        self.host.rearm();
+        Ok(module)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -306,6 +389,19 @@ impl JsEngine {
         rt.set_max_stack_size(512 * 1024);
         let h = host.clone();
         rt.set_interrupt_handler(Some(Box::new(move || h.budget_exceeded())));
+        if let Some(sources) = host.sources() {
+            let loader = ProjectLoader {
+                host: host.clone(),
+                sources: sources.clone(),
+                found: Rc::default(),
+            };
+            let resolver = ProjectLoader {
+                host: host.clone(),
+                sources: sources.clone(),
+                found: loader.found.clone(),
+            };
+            rt.set_loader(resolver, loader);
+        }
         let ctx = Context::full(&rt).map_err(|e| GuestError(e.to_string()))?;
         let fns: FnMap = Rc::default();
         ctx.with(|ctx| -> Result<(), GuestError> {
