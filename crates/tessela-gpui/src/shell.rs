@@ -37,7 +37,7 @@ use tessela_view::styled::{self, Length, STYLED};
 use tessela_view::text::{icon, short_error};
 use tessela_view::{CORE, ERROR, Handler, NodeId, Tone, ViewTree};
 
-use crate::inspect::{Inspector, WindowInfo};
+use crate::inspect::{InspectCommand, InspectControl, Inspector, WindowInfo};
 
 // ---------------------------------------------------------------- options
 
@@ -265,7 +265,34 @@ pub(crate) struct Model {
     /// Input region last set on each overlay window, to set it only on change.
     regions: Rc<RefCell<HashMap<WindowKey, Vec<Bounds<Pixels>>>>>,
     pub(crate) inspector: Option<Inspector>,
+    inspect: Inspect,
     warned: RefCell<HashSet<String>>,
+}
+
+/// Devtools inspection state (see [`InspectCommand`]).
+#[derive(Default)]
+struct Inspect {
+    highlight: Option<(usize, NodeId)>,
+    picking: bool,
+    /// Under the pointer while picking.
+    hover: Option<(usize, NodeId)>,
+    /// Last bounds sent to the probe, to send only changes.
+    reported: Rc<std::cell::Cell<Option<(usize, NodeId, [i32; 4])>>>,
+}
+
+impl Inspect {
+    /// Windows measure their nodes only while something may be outlined.
+    fn active(&self) -> bool {
+        self.highlight.is_some() || self.picking
+    }
+
+    fn target(&self) -> Option<(usize, NodeId)> {
+        if self.picking {
+            self.hover.or(self.highlight)
+        } else {
+            self.highlight
+        }
+    }
 }
 
 impl Model {
@@ -470,6 +497,8 @@ struct Draw<'a> {
     tree: &'a ViewTree,
     slot: usize,
     model: &'a Entity<Model>,
+    /// While inspecting: where each node lands in this window.
+    measure: Option<Measure>,
 }
 
 impl Draw<'_> {
@@ -478,6 +507,21 @@ impl Draw<'_> {
     }
 
     fn node(&self, id: NodeId, window: &mut Window, cx: &mut App) -> AnyElement {
+        let el = self.node_inner(id, window, cx);
+        match &self.measure {
+            // A popup's anchor covers its parent; measuring it would shadow
+            // the parent's other children when picking.
+            Some(m) if self.tree.get(id).is_some_and(|r| r.kind != styled::POPUP) => Measured {
+                node: id,
+                into: m.clone(),
+                child: el,
+            }
+            .into_any_element(),
+            _ => el,
+        }
+    }
+
+    fn node_inner(&self, id: NodeId, window: &mut Window, cx: &mut App) -> AnyElement {
         let Some(r) = self.tree.get(id) else {
             return div().into_any_element();
         };
@@ -1203,12 +1247,227 @@ impl Render for Tooltip {
     }
 }
 
+// ---------------------------------------------------------------- inspect
+
+/// Node bounds in a window, in paint order (a node before its children).
+type Measure = Rc<RefCell<Vec<(NodeId, Bounds<Pixels>)>>>;
+
+/// Wraps a node's element and records its bounds. It takes the child's
+/// layout as its own, so it changes nothing on screen.
+struct Measured {
+    node: NodeId,
+    into: Measure,
+    child: AnyElement,
+}
+
+impl IntoElement for Measured {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for Measured {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.into.borrow_mut().push((self.node, bounds));
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+/// The innermost measured node under `pos`.
+fn hit(measure: &Measure, pos: gpui::Point<Pixels>) -> Option<NodeId> {
+    measure
+        .borrow()
+        .iter()
+        .rev()
+        .find(|(_, b)| b.contains(&pos))
+        .map(|(n, _)| *n)
+}
+
+/// Drawn over a window's content while inspecting: the outline of the
+/// target node with a `Kind #id w×h` tag, and in pick mode a layer that
+/// takes every pointer event so no handler fires.
+fn inspect_layer(m: &Model, model: &Entity<Model>, slot: usize, measure: &Measure) -> AnyElement {
+    let target = m
+        .inspect
+        .target()
+        .filter(|(s, _)| *s == slot)
+        .map(|(_, n)| n);
+    let kind = target
+        .and_then(|n| m.trees.tree(slot)?.get(n))
+        .map(|r| r.kind.clone())
+        .unwrap_or_default();
+    let accent: Hsla = Rgba::from(rgb(0x4fa3ff)).into();
+    let reported = m.inspect.reported.clone();
+    let inspector = m.inspector.clone();
+    let painted = measure.clone();
+    let outline = canvas(
+        |_, _, _| {},
+        move |_, _, window, cx| {
+            let Some(node) = target else { return };
+            let found = painted
+                .borrow()
+                .iter()
+                .find(|(n, _)| *n == node)
+                .map(|(_, b)| *b);
+            let Some(b) = found else { return };
+            window.paint_quad(gpui::fill(b, accent.opacity(0.22)));
+            window.paint_quad(gpui::outline(b, accent, gpui::BorderStyle::Solid));
+            let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+            let text = SharedString::from(format!("{kind} #{node}  {w:.0}×{h:.0}"));
+            let run = gpui::TextRun {
+                len: text.len(),
+                font: window.text_style().font(),
+                color: Rgba::from(rgb(0xffffff)).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let line = window
+                .text_system()
+                .shape_line(text, px(11.0), &[run], None);
+            let tag = Size::new(line.width + px(8.0), px(16.0));
+            // Above the node, else below it, else over its top edge; inside
+            // the window either way.
+            let view = window.viewport_size();
+            let y = if b.origin.y >= tag.height {
+                b.origin.y - tag.height
+            } else if b.bottom() + tag.height <= view.height {
+                b.bottom()
+            } else {
+                b.origin.y
+            };
+            let x = b.origin.x.min(view.width - tag.width).max(px(0.0));
+            let origin = point(x, y);
+            window.paint_quad(gpui::fill(Bounds::new(origin, tag), accent));
+            let _ = line.paint(
+                point(origin.x + px(4.0), origin.y + px(1.0)),
+                px(14.0),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            let rect = [
+                f32::from(b.origin.x).round() as i32,
+                f32::from(b.origin.y).round() as i32,
+                w.round() as i32,
+                h.round() as i32,
+            ];
+            if reported.get() != Some((slot, node, rect)) {
+                reported.set(Some((slot, node, rect)));
+                if let Some(i) = &inspector {
+                    i.0.measured(slot, node, rect.map(|v| v as f32));
+                }
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    let layer = div().absolute().top_0().left_0().size_full().child(outline);
+    if !m.inspect.picking {
+        return layer.into_any_element();
+    }
+    let (hover, pick, cancel) = (measure.clone(), measure.clone(), model.clone());
+    let (model_hover, model_pick) = (model.clone(), model.clone());
+    layer
+        .id("inspect-pick")
+        .occlude()
+        .cursor_crosshair()
+        .on_mouse_move(move |e, _, cx| {
+            let Some(node) = hit(&hover, e.position) else {
+                return;
+            };
+            model_hover.update(cx, |m, cx| {
+                if m.inspect.hover != Some((slot, node)) {
+                    m.inspect.hover = Some((slot, node));
+                    if let Some(i) = &m.inspector {
+                        i.0.picked(slot, Some(node), false);
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .on_mouse_down(MouseButton::Left, move |e, _, cx| {
+            cx.stop_propagation();
+            let Some(node) = hit(&pick, e.position) else {
+                return;
+            };
+            model_pick.update(cx, |m, cx| {
+                m.inspect.picking = false;
+                m.inspect.hover = None;
+                m.inspect.highlight = Some((slot, node));
+                if let Some(i) = &m.inspector {
+                    i.0.picked(slot, Some(node), true);
+                }
+                cx.notify();
+            });
+        })
+        .on_mouse_down(MouseButton::Right, move |_, _, cx| {
+            cx.stop_propagation();
+            cancel.update(cx, |m, cx| {
+                m.inspect.picking = false;
+                m.inspect.hover = None;
+                if let Some(i) = &m.inspector {
+                    i.0.picked(slot, None, true);
+                }
+                cx.notify();
+            });
+        })
+        .into_any_element()
+}
+
 // ---------------------------------------------------------------- windows
 
 pub(crate) struct SurfaceView {
     model: Entity<Model>,
     key: WindowKey,
     placement: Placement,
+    measure: Measure,
 }
 
 impl SurfaceView {
@@ -1223,6 +1482,7 @@ impl SurfaceView {
             model,
             key,
             placement,
+            measure: Measure::default(),
         }
     }
 }
@@ -1232,14 +1492,16 @@ impl Render for SurfaceView {
         let started = Instant::now();
         let (key, placement) = (self.key, self.placement.clone());
         let model = self.model.clone();
+        let measure = self.measure.clone();
         // Drawing inside `update` lends the model and the app context as
         // disjoint borrows: elements read the model while building with `cx`.
         self.model.update(cx, |m, cx| {
-            draw_window(m, cx, window, &model, key, &placement, started)
+            draw_window(m, cx, window, &model, key, &placement, &measure, started)
         })
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_window(
     m: &mut Model,
     cx: &mut App,
@@ -1247,6 +1509,7 @@ fn draw_window(
     model: &Entity<Model>,
     key: WindowKey,
     placement: &Placement,
+    measure: &Measure,
     started: Instant,
 ) -> AnyElement {
     let m: &Model = m;
@@ -1267,6 +1530,10 @@ fn draw_window(
         tree,
         slot,
         model,
+        measure: m.inspect.active().then(|| {
+            measure.borrow_mut().clear();
+            measure.clone()
+        }),
     };
     let el = match key {
         WindowKey::Surface(_) => {
@@ -1421,6 +1688,16 @@ fn draw_window(
                 .into_any_element()
         }
     };
+    let el = if m.inspect.active() {
+        div()
+            .size_full()
+            .relative()
+            .child(el)
+            .child(inspect_layer(m, model, slot, measure))
+            .into_any_element()
+    } else {
+        el
+    };
     if let Some(i) = &m.inspector {
         i.rendered(slot, matches!(key, WindowKey::Popup(..)), started.elapsed());
     }
@@ -1567,6 +1844,7 @@ impl Renderer for Shell {
                     drag: Rc::default(),
                     regions: Rc::default(),
                     inspector,
+                    inspect: Inspect::default(),
                     warned: RefCell::default(),
                 });
                 let mut frames = rx.take().expect("one run");
@@ -1603,6 +1881,28 @@ impl Renderer for Shell {
                     }
                 })
                 .detach();
+                // Devtools requests: outline a node, pick mode.
+                let inspector = model.read(cx).inspector.clone();
+                if let Some(i) = inspector {
+                    let (control, mut commands) = InspectControl::channel();
+                    i.0.attach(control);
+                    let m = model.clone();
+                    cx.spawn(async move |cx| {
+                        while let Some(c) = commands.next().await {
+                            m.update(cx, |m, cx| {
+                                match c {
+                                    InspectCommand::Highlight(h) => m.inspect.highlight = h,
+                                    InspectCommand::Pick(on) => {
+                                        m.inspect.picking = on;
+                                        m.inspect.hover = None;
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .detach();
+                }
             });
         Ok(())
     }

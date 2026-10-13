@@ -9,7 +9,7 @@
 mod inspect;
 mod shell;
 
-pub use inspect::{Inspector, RenderProbe, WindowInfo};
+pub use inspect::{InspectCommand, InspectControl, Inspector, RenderProbe, WindowInfo};
 pub use shell::{ImageResolver, Shell, Theme};
 
 use std::time::Duration;
