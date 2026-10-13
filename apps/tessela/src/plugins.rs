@@ -32,8 +32,8 @@ fn spawn(name: &str, cfg: &PluginConfig, root: &Path, services: &Path) -> std::i
         .command
         .split_first()
         .ok_or_else(|| std::io::Error::other("empty command"))?;
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .current_dir(root)
         .env("TESSELA_SERVICES_DIR", services)
         .env("MARATHON_SERVICES_DIR", services)
@@ -43,8 +43,16 @@ fn spawn(name: &str, cfg: &PluginConfig, root: &Path, services: &Path) -> std::i
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()?;
+        .process_group(0);
+    // If the runner dies, even by SIGKILL, the kernel stops the plugin too.
+    // SAFETY: prctl is async-signal-safe; nothing else runs before exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn()?;
     for stream in [
         child
             .stdout
