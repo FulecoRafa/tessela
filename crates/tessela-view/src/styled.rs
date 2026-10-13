@@ -140,6 +140,8 @@ const INPUT_PROPS: &[PropSpec] = &[
     opt("size", PropType::Number),
     opt("color", PropType::Color),
     opt("autofocus", PropType::Bool),
+    // Drawn as dots (passwords).
+    opt("secret", PropType::Bool),
     opt("on_change", TEXT_EVENT),
     opt("on_submit", TEXT_EVENT),
 ];
@@ -209,7 +211,11 @@ pub(crate) fn specs() -> Vec<ComponentSpec> {
         }),
         spec(INPUT, Some("value"), INPUT_PROPS, false, |n| {
             let v = n.str("value").filter(|v| !v.is_empty());
-            let text = v.or(n.str("placeholder")).unwrap_or("");
+            let text = match v {
+                Some(v) if n.bool("secret") => "•".repeat(v.chars().count()),
+                Some(v) => v.to_string(),
+                None => n.str("placeholder").unwrap_or("").to_string(),
+            };
             Node::new("Text").prop("text", text)
         }),
         spec(SURFACE, None, SURFACE_PROPS, true, |n| container(n, "row")),
@@ -357,6 +363,7 @@ mod tests {
                     {"type": "Ring", "value": 0.5, "size": 32, "children": ["50"]},
                     {"type": "Slider", "value": 0.3, "width": "50%", "on_change": 4},
                     {"type": "Label", "text": "a long body", "wrap": true, "lines": 3},
+                    {"type": "Input", "value": "abc", "secret": true},
                 ]},
             ]}))
             .unwrap();
@@ -365,6 +372,11 @@ mod tests {
         assert_eq!(lowered.children[0].kind, "Column");
         assert_eq!(lowered.children[0].children[1].kind, "Progress");
         assert_eq!(lowered.children[0].children[2].kind, "Progress");
+        assert_eq!(
+            lowered.children[0].children[4].props["text"],
+            json!("•••"),
+            "secret input text never reaches a fallback"
+        );
 
         let bad = |t| v.parse(t).unwrap_err().to_string();
         assert!(bad(json!({"type": "Box", "bg": "red"})).contains("color"));

@@ -971,6 +971,11 @@ impl Draw<'_> {
             }
             _ => value,
         };
+        let text = if p.bool("secret") {
+            "•".repeat(text.chars().count())
+        } else {
+            text
+        };
         let size = p.f32("size").unwrap_or(13.0);
         let color = self
             .m
