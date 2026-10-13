@@ -3,6 +3,7 @@
 //! ```toml
 //! name = "my-shell"
 //! font = "Inter"
+//! themes = ["../my-kit/theme.toml"]   # [dark] and [light] tokens, merged in order
 //!
 //! [surfaces.bar]                       # one extension per surface
 //! entry = "src/surfaces/bar.tsx"       # relative to the project
@@ -15,7 +16,7 @@
 //! [imports]                            # packages: import { Icon } from "@kit/Icon"
 //! kit = "../my-kit"                     # a directory, relative to the project
 //!
-//! [theme.dark]                         # tokens for "$name" colors
+//! [theme.dark]                         # tokens for "$name" colors (override the files)
 //! surface = "#232834"
 //! [theme.light]
 //! surface = "#FCFCFC"
@@ -41,6 +42,8 @@ pub struct Project {
     pub plugins: BTreeMap<String, PluginConfig>,
     #[serde(default)]
     pub imports: BTreeMap<String, PathBuf>,
+    #[serde(default)]
+    pub themes: Vec<PathBuf>,
     #[serde(default)]
     pub theme: ThemeConfig,
     #[serde(skip)]
@@ -117,6 +120,20 @@ impl Project {
                 .canonicalize()
                 .with_context(|| format!("import '{name}': no directory {}", full.display()))?;
         }
+        // Theme files first, then the manifest's own tokens on top.
+        let mut theme = ThemeConfig::default();
+        for file in &p.themes {
+            let path = root.join(file);
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("theme {}", path.display()))?;
+            let t: ThemeConfig =
+                toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+            theme.dark.extend(t.dark);
+            theme.light.extend(t.light);
+        }
+        theme.dark.extend(std::mem::take(&mut p.theme.dark));
+        theme.light.extend(std::mem::take(&mut p.theme.light));
+        p.theme = theme;
         for (scheme, tokens) in [("dark", &p.theme.dark), ("light", &p.theme.light)] {
             for (k, v) in tokens {
                 anyhow::ensure!(
