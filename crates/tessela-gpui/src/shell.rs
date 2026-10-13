@@ -8,7 +8,9 @@
 //! `onDismiss`) are transparent overlays covering the output: the content
 //! sits where its anchors put it, and a press anywhere else dismisses.
 //! Hyprland's focus grab would be the alternative, but GPUI does not speak
-//! that protocol.
+//! that protocol. The space the project's other surfaces reserve (the bar)
+//! is cut out of such an overlay's input region: a click on the bar reaches
+//! the bar, which decides whether to switch panels or close them.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -250,6 +252,8 @@ pub(crate) struct Model {
     /// Popup anchors: bounds in their window, written while painting.
     anchors: Rc<RefCell<HashMap<(usize, NodeId), Bounds<Pixels>>>>,
     inputs: HashMap<(usize, NodeId), InputState>,
+    /// Input region last set on each overlay window, to set it only on change.
+    regions: Rc<RefCell<HashMap<WindowKey, Vec<Bounds<Pixels>>>>>,
     pub(crate) inspector: Option<Inspector>,
     warned: RefCell<HashSet<String>>,
 }
@@ -333,6 +337,39 @@ impl Model {
                 p.keyboard = has_kind(tree, popup, styled::INPUT);
                 out.push((WindowKey::Popup(slot, popup), p));
             }
+        }
+        out
+    }
+}
+
+impl Model {
+    /// Space reserved at each edge (`[top, right, bottom, left]`) by the
+    /// visible surfaces of other slots: a bar's `exclusive`, as declared, also
+    /// under `--dev` where nothing really reserves it.
+    fn reserved(&self, except: usize) -> [f32; 4] {
+        let mut out = [0.0f32; 4];
+        for slot in (0..self.slots.len()).filter(|s| *s != except) {
+            let Some((_, _, r)) = self.root(slot) else {
+                continue;
+            };
+            let p = P(r);
+            let zone = p.f32("exclusive").unwrap_or(0.0);
+            if r.kind != styled::SURFACE
+                || zone <= 0.0
+                || p.0.props.get("visible") == Some(&json!(false))
+            {
+                continue;
+            }
+            let pl = Placement::of(r, false);
+            // The edge a bar sits on: anchored there and not to the opposite one.
+            let edge = match (pl.top, pl.right, pl.bottom, pl.left) {
+                (true, _, false, _) => 0,
+                (false, _, true, _) => 2,
+                (_, true, _, false) => 1,
+                (_, false, _, true) => 3,
+                _ => continue,
+            };
+            out[edge] = out[edge].max(zone);
         }
         out
     }
@@ -1084,13 +1121,40 @@ fn draw_window(
                 if !(pl.top && pl.bottom) && pl.height > 0.0 {
                     frame = frame.h(px(pl.height));
                 }
+                // Input region: the content, plus the backdrop minus the space
+                // other surfaces reserve, so their clicks pass through.
+                let [rt, rr, rb, rl] = m.reserved(slot);
+                let regions = m.regions.clone();
+                let region = canvas(
+                    |_, _, _| {},
+                    move |content, _, window, _| {
+                        let v = window.viewport_size();
+                        let open = Bounds {
+                            origin: point(px(rl), px(rt)),
+                            size: Size::new(
+                                (v.width - px(rl + rr)).max(px(0.0)),
+                                (v.height - px(rt + rb)).max(px(0.0)),
+                            ),
+                        };
+                        let wanted = vec![content, open];
+                        let mut regions = regions.borrow_mut();
+                        if regions.get(&key) != Some(&wanted) {
+                            window.set_input_region(Some(&wanted));
+                            regions.insert(key, wanted);
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full();
                 base.id("backdrop")
                     .on_mouse_down(MouseButton::Left, move |_, _, _| {
                         if let Some(h) = &dismiss {
                             send(&ui, h, Value::Null)
                         }
                     })
-                    .child(frame.flex().child(content))
+                    .child(frame.flex().child(content).child(region))
                     .into_any_element()
             }
         }
@@ -1197,6 +1261,7 @@ impl Windows {
             .map(|(k, _)| *k)
             .collect();
         for k in stale {
+            model.read_with(cx, |m, _| m.regions.borrow_mut().remove(&k));
             if let Some((_, handle)) = self.open.remove(&k) {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             }
@@ -1309,6 +1374,7 @@ impl Renderer for Shell {
                     dev: dev_placement,
                     anchors: Rc::default(),
                     inputs: HashMap::new(),
+                    regions: Rc::default(),
                     inspector,
                     warned: RefCell::default(),
                 });
