@@ -64,7 +64,7 @@ App::builder()
 Um projeto é uma pasta com `tessela.toml`: superfícies (uma entrada TSX ou
 Luau por janela), pacotes importáveis como `@nome/...`, plugins (serviços que
 o runner mantém vivos) e tokens de tema. Exemplo completo:
-[`../adwaita-shell`](../adwaita-shell) (barra, gaveta, launcher e o pacote `@kit`).
+[`../adwaita-shell`](../adwaita-shell) (barra, painéis, gaveta, launcher e o pacote `@kit`).
 
 ```sh
 nix develop                                     # Rust, Go, Python, libs do GPUI, sway, grim

@@ -23,3 +23,4 @@ Escreva um ADR novo que substitui o antigo; não reescreva o histórico.
 | [0016](0016-dados-da-extensao.md) | Sinais de módulo pertencem à extensão; estado compartilhado e módulos de desktop | aceita |
 | [0017](0017-memo-e-conteudo-oculto.md) | `memo()`; superfícies ocultas e popups fechados não são avaliados | aceita |
 | [0018](0018-devtools.md) | Validar pelo devtools; modo `--nested` | aceita |
+| [0020](0020-paineis-e-controles-continuos.md) | Painéis sobre a barra; `Slider`, listas com altura máxima, texto que quebra | aceita |
