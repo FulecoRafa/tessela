@@ -23,7 +23,7 @@ módulos     tessela-unix · tessela-timer       trait Module — o único camin
             tessela-state · tessela-desktop
 renderers   tessela-tui · tessela-gpui         trait Renderer (gpui: LayerBar e Shell)
 fachada     tessela                            re-exporta tudo atrás de features
-apps        apps/tessela                       runner de projetos e devtools (`tessela`)
+apps        apps/tessela                       runner de projetos e devtools, CLI e gráfico (`tessela`)
             apps/marathon                      a barra de exemplo do framework
 ```
 
@@ -107,7 +107,7 @@ caminho para isso é rodar o engine em WASM, sem mudar a API do guest.
 |---|---|---|
 | **0** ✓ | camadas, contratos, features, docs | marathon rodando sobre o framework |
 | **1** ✓ | ids estáveis e patches, schemas e componentes de app com fallback, eventos de ponteiro, ações declarativas, timers, pool de workers, quotas, `persist` | marathon usando tudo isso, benchmark igual |
-| **1.5** ✓ | projetos com entradas e pacotes, primitivos estilizados e temas, superfícies e popups, módulos de dados, `memo`, runner com plugins, devtools e `--nested` | adwaita-shell (barra, gaveta, launcher) |
+| **1.5** ✓ | projetos com entradas e pacotes, primitivos estilizados e temas, superfícies e popups, módulos de dados, `memo`, runner com plugins, devtools (CLI e gráfico, com destaque e seleção na shell) e `--nested` | adwaita-shell (barra, gaveta, launcher) |
 | 2 | extensões não-UI (providers, comandos), schemas → tipos, navegação por teclado | launcher completo |
 | 3 | modo remoto (patches + eventos pela rede), renderer HTML para celular | launchpad, controle de jogo |
 | 4 | pacotes assinados, rede P2P, prompts de capacidade; mensageria interna | "Malha", mensageria |

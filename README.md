@@ -33,7 +33,7 @@ crates/
   tessela-tui      renderer de terminal   (feature tui)
   tessela-gpui     renderer GPUI          (feature gpui): LayerBar e Shell (uma janela por superfície)
   tessela-proto    protocolo dos serviços
-apps/tessela       `tessela run` (projetos) e `tessela devtools`
+apps/tessela       `tessela run` (projetos) e `tessela devtools` (terminal ou `ui`, gráfico)
 apps/marathon      a barra de exemplo
 vendor/            dependências com correções locais (ver vendor/README.md)
 sdk/{go,python}    helpers para escrever serviços
@@ -73,9 +73,10 @@ cargo build -p tessela-cli
 ./target/debug/tessela run ../adwaita-shell --nested     # num sway headless próprio
 ./target/debug/tessela run ../adwaita-shell --devtools   # e em outro terminal:
 ./target/debug/tessela devtools                         # overview, tree, calls, frames, click, set, shot...
+./target/debug/tessela devtools ui                      # o mesmo numa janela, como o DevTools do navegador
 ```
 
-Decisões: [ADR 0015](docs/adr/0015-projetos.md) a [0018](docs/adr/0018-devtools.md).
+Decisões: [ADR 0015](docs/adr/0015-projetos.md) a [0020](docs/adr/0020-paineis-e-controles-continuos.md).
 
 ## Rodando a marathon
 
