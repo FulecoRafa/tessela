@@ -164,6 +164,32 @@ impl SharedState {
             .collect()
     }
 
+    /// Set a value as if an extension did: every subscriber hears it, and it
+    /// is saved if stored. For host code (devtools edit state with it).
+    pub fn set(&self, key: &str, value: Value) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.values.get(key) == Some(&value) {
+            return;
+        }
+        inner.values.insert(key.to_string(), value.clone());
+        for sub in inner.subs.values().filter(|s| s.key == key) {
+            sub.sink.send(Inbound::Signal {
+                sig: sub.sig,
+                value: value.clone(),
+            });
+        }
+        if inner.stored.contains(key)
+            && let Some(saver) = &self.saver
+        {
+            let stored: Map<String, Value> = inner
+                .stored
+                .iter()
+                .filter_map(|k| inner.values.get(k).map(|v| (k.clone(), v.clone())))
+                .collect();
+            let _ = saver.send(stored);
+        }
+    }
+
     fn key(args: &Value) -> Result<String, String> {
         let key = args["key"].as_str().ok_or("missing key")?;
         if key.is_empty() || key.len() > MAX_KEY {
@@ -221,29 +247,7 @@ impl Module for SharedState {
                 Ok(json!({ "sig": sig }))
             }
             "set" => {
-                let key = Self::key(&args)?;
-                let value = args["value"].clone();
-                let mut inner = self.inner.lock().unwrap();
-                if inner.values.get(&key) == Some(&value) {
-                    return Ok(Value::Null);
-                }
-                inner.values.insert(key.clone(), value.clone());
-                for sub in inner.subs.values().filter(|s| s.key == key) {
-                    sub.sink.send(Inbound::Signal {
-                        sig: sub.sig,
-                        value: value.clone(),
-                    });
-                }
-                if inner.stored.contains(&key)
-                    && let Some(saver) = &self.saver
-                {
-                    let stored: Map<String, Value> = inner
-                        .stored
-                        .iter()
-                        .filter_map(|k| inner.values.get(k).map(|v| (k.clone(), v.clone())))
-                        .collect();
-                    let _ = saver.send(stored);
-                }
+                self.set(&Self::key(&args)?, args["value"].clone());
                 Ok(Value::Null)
             }
             other => Err(format!("state: unknown function '{other}'")),
