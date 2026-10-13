@@ -54,3 +54,7 @@ ratatui = "0.30"
 futures = "0.3"
 gpui = { package = "gpui-unofficial", version = "=1.23.2" }
 gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.23.2" }
+
+# Local fixes to dependencies; see vendor/README.md.
+[patch.crates-io]
+gpui-linux-gpui-unofficial = { path = "vendor/gpui-linux-gpui-unofficial" }
