@@ -1,7 +1,8 @@
 //! `tessela` — runs a project (a directory with `tessela.toml`).
 //!
 //! ```text
-//! tessela run <project> [--dev] [--headless [--seconds N]]
+//! tessela run <project> [--dev] [--devtools] [--headless [--seconds N]]
+//! tessela devtools [--project NAME] <command>     (see devtools.rs)
 //! ```
 //!
 //! `--dev` places surfaces next to the desktop's own bar instead of over it:
@@ -10,12 +11,13 @@
 //! Logs go to stderr; `TESSELA_LOG=debug` for more, `TESSELA_LOG=warn` for less.
 //! Other crates (GPUI, zbus...) only log warnings.
 
+mod devtools;
 mod plugins;
 mod project;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -25,11 +27,16 @@ use tessela::state::SharedState;
 use tessela::timer::Timers;
 use tessela::unix::UnixServices;
 
+use crate::devtools::Devtools;
 use crate::plugins::Plugins;
 use crate::project::Project;
 
 const USAGE: &str = "\
-tessela run <project> [--dev] [--headless [--seconds N]]";
+tessela run <project> [--dev] [--devtools] [--headless [--seconds N]]
+tessela devtools [--project NAME] <command>   (tessela devtools --help)";
+
+/// Set when running with --devtools: log lines also go to its console.
+static DEVTOOLS: OnceLock<Arc<Devtools>> = OnceLock::new();
 
 struct Logger {
     level: log::LevelFilter,
@@ -48,6 +55,9 @@ impl log::Log for Logger {
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
             eprintln!("{:<5} {}", r.level(), r.args());
+            if let Some(d) = DEVTOOLS.get() {
+                d.host_log(r.level(), &r.args().to_string());
+            }
         }
     }
     fn flush(&self) {}
@@ -67,6 +77,7 @@ fn init_log() {
 struct RunArgs {
     project: PathBuf,
     dev: bool,
+    devtools: bool,
     headless: bool,
     seconds: Option<f64>,
 }
@@ -75,12 +86,14 @@ fn run_args(mut it: impl Iterator<Item = String>) -> anyhow::Result<RunArgs> {
     let mut a = RunArgs {
         project: PathBuf::new(),
         dev: false,
+        devtools: false,
         headless: false,
         seconds: None,
     };
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--dev" => a.dev = true,
+            "--devtools" => a.devtools = true,
             "--headless" => a.headless = true,
             "--seconds" => {
                 a.seconds = Some(it.next().context("--seconds needs a number")?.parse()?)
@@ -127,18 +140,34 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
         services.display()
     );
 
-    let plugins = Plugins::start(&project.plugins, &project.root, &services);
+    let plugins = Arc::new(Plugins::start(&project.plugins, &project.root, &services));
     // Give plugins a moment to create their sockets before the first render.
     if !project.plugins.is_empty() {
         std::thread::sleep(Duration::from_millis(300));
     }
 
     let desktop = Arc::new(Desktop::new());
+    let state = Arc::new(SharedState::with_store(project.state_file()));
     let mut builder = App::builder()
         .engines(tessela::engines())
         .module(UnixServices::new([services.clone()]))
         .module(Timers::new())
-        .module(SharedState::with_store(project.state_file()));
+        .shared_module(state.clone());
+    let devtools = args.devtools.then(|| {
+        let d = Devtools::new();
+        d.attach(devtools::Sources {
+            project: project.name.clone(),
+            state: state.clone(),
+            desktop: desktop.clone(),
+            plugins: plugins.clone(),
+        });
+        let _ = DEVTOOLS.set(d.clone());
+        d
+    });
+    if let Some(d) = &devtools {
+        d.serve(runtime.join("devtools.sock"))?;
+        builder = builder.probe(d.clone());
+    }
     for m in desktop.modules() {
         builder = builder.shared_module(m);
     }
@@ -154,7 +183,7 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
         }
         app.run(r)
     } else {
-        run_gpui(app, &project, &desktop, args.dev)
+        run_gpui(app, &project, &desktop, args.dev, devtools)
     };
     plugins.stop();
     result
@@ -166,6 +195,7 @@ fn run_gpui(
     project: &Project,
     desktop: &Arc<Desktop>,
     dev: bool,
+    devtools: Option<Arc<Devtools>>,
 ) -> anyhow::Result<()> {
     use tessela::gpui::{Shell, Theme};
     let images = Arc::new(desktop.images(Some(project.root.clone())));
@@ -178,11 +208,18 @@ fn run_gpui(
     shell.images = Arc::new(move |src| images.resolve(src));
     shell.dev_placement = dev;
     shell.scheme = Some(desktop.context.color_scheme());
+    shell.inspector = devtools.map(|d| tessela::gpui::Inspector(d));
     app.run(shell)
 }
 
 #[cfg(not(feature = "gpui"))]
-fn run_gpui(_: tessela::host::App, _: &Project, _: &Arc<Desktop>, _: bool) -> anyhow::Result<()> {
+fn run_gpui(
+    _: tessela::host::App,
+    _: &Project,
+    _: &Arc<Desktop>,
+    _: bool,
+    _: Option<Arc<Devtools>>,
+) -> anyhow::Result<()> {
     anyhow::bail!("built without the `gpui` feature; use --headless")
 }
 
@@ -191,6 +228,7 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("run") => run(run_args(args)?),
+        Some("devtools") => devtools::client(args),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             Ok(())
