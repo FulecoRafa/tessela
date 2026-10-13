@@ -12,6 +12,9 @@
 //! [plugins.audio]                      # a service the runner keeps alive
 //! command = ["python3", "plugins/audio.py"]
 //!
+//! [imports]                            # packages: import { Icon } from "@kit/Icon"
+//! kit = "../my-kit"                     # a directory, relative to the project
+//!
 //! [theme.dark]                         # tokens for "$name" colors
 //! surface = "#232834"
 //! [theme.light]
@@ -36,6 +39,8 @@ pub struct Project {
     pub surfaces: BTreeMap<String, SurfaceConfig>,
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginConfig>,
+    #[serde(default)]
+    pub imports: BTreeMap<String, PathBuf>,
     #[serde(default)]
     pub theme: ThemeConfig,
     #[serde(skip)]
@@ -102,6 +107,16 @@ impl Project {
                 "surface {name}: entry must be a path inside the project"
             );
         }
+        for (name, dir) in p.imports.iter_mut() {
+            anyhow::ensure!(
+                valid_name(name),
+                "import name '{name}' must be [a-zA-Z0-9_-]"
+            );
+            let full = root.join(&*dir);
+            *dir = full
+                .canonicalize()
+                .with_context(|| format!("import '{name}': no directory {}", full.display()))?;
+        }
         for (scheme, tokens) in [("dark", &p.theme.dark), ("light", &p.theme.light)] {
             for (k, v) in tokens {
                 anyhow::ensure!(
@@ -124,6 +139,11 @@ impl Project {
                     root: self.root.clone(),
                     file: s.entry.clone(),
                     capabilities: s.capabilities.clone(),
+                    packages: self
+                        .imports
+                        .iter()
+                        .map(|(n, d)| (n.clone(), d.clone()))
+                        .collect(),
                     limits: Limits {
                         memory_bytes: s.memory_mb.map(|m| m << 20).unwrap_or(32 << 20),
                         budget: s.budget_ms.map(Duration::from_millis).unwrap_or(d.budget),

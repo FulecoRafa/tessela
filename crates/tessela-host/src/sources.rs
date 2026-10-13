@@ -21,6 +21,8 @@ pub struct Entry {
     pub file: String,
     pub capabilities: Vec<String>,
     pub limits: Limits,
+    /// Packages it may import as `@name/...`: name → directory.
+    pub packages: Vec<(String, PathBuf)>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,7 @@ pub(crate) struct Resolved {
     pub file: String,
     pub grants: Grants,
     pub limits: Limits,
+    pub packages: Vec<(String, PathBuf)>,
     /// Files whose change reloads the extension besides the ones it reads.
     pub config: Vec<PathBuf>,
 }
@@ -69,6 +72,7 @@ impl Origin {
                     file,
                     grants: manifest.grants(),
                     limits: manifest.limits(),
+                    packages: Vec::new(),
                     config: vec![dir.join("widget.toml")],
                 })
             }
@@ -78,24 +82,32 @@ impl Origin {
                 file: e.file.clone(),
                 grants: Grants::new(e.capabilities.iter().cloned()),
                 limits: e.limits,
+                packages: e.packages.clone(),
                 config: Vec::new(),
             }),
         }
     }
 }
 
-/// Reads files under a root for the engines, refusing anything that resolves
-/// outside it (`..` is already refused by the core; this also stops
-/// symlinks), and remembers what was read for hot reload.
+/// Reads files under a root (and under declared package roots, for `@name/...`
+/// paths) for the engines, refusing anything that resolves outside them
+/// (`..` is already refused by the core; this also stops symlinks), and
+/// remembers what was read for hot reload.
 pub(crate) struct FileSources {
     root: PathBuf,
+    packages: Vec<(String, PathBuf)>,
     read: Mutex<Vec<PathBuf>>,
 }
 
 impl FileSources {
-    pub fn new(root: &Path) -> Self {
+    pub fn with_packages(root: &Path, packages: &[(String, PathBuf)]) -> Self {
+        let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         Self {
-            root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+            root: canonical(root),
+            packages: packages
+                .iter()
+                .map(|(n, p)| (n.clone(), canonical(p)))
+                .collect(),
             read: Mutex::default(),
         }
     }
@@ -108,13 +120,25 @@ impl FileSources {
 
 impl Sources for FileSources {
     fn read(&self, path: &str) -> Option<String> {
-        let full = self.root.join(path);
+        let (root, rel) = match path.strip_prefix('@') {
+            Some(pkg) => {
+                let (name, rel) = pkg.split_once('/')?;
+                let root = self
+                    .packages
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, r)| r)?;
+                (root, rel)
+            }
+            None => (&self.root, path),
+        };
+        let full = root.join(rel);
         let canonical = full.canonicalize().ok()?;
-        if !canonical.starts_with(&self.root) {
+        if !canonical.starts_with(root) {
             log::warn!(
                 "refused to read {} (outside {})",
                 canonical.display(),
-                self.root.display()
+                root.display()
             );
             return None;
         }
@@ -138,7 +162,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(base.join("secret.ts"), root.join("src/link.ts")).unwrap();
 
-        let s = FileSources::new(&root);
+        let s = FileSources::with_packages(&root, &[]);
         assert_eq!(s.read("src/a.ts").as_deref(), Some("export const a = 1;"));
         assert_eq!(s.read("../secret.ts"), None);
         #[cfg(unix)]
@@ -148,6 +172,33 @@ mod tests {
             "symlinks out of the root are refused"
         );
         assert_eq!(s.read_files(), vec![root.join("src/a.ts")]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn packages_read_under_their_own_root() {
+        let base = std::env::temp_dir().join(format!("tessela-packages-{}", std::process::id()));
+        let (app, kit) = (base.join("app"), base.join("kit"));
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::create_dir_all(kit.join("ui")).unwrap();
+        std::fs::write(kit.join("ui/Icon.tsx"), "icon").unwrap();
+        std::fs::write(app.join("src/secret.ts"), "secret").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(app.join("src/secret.ts"), kit.join("ui/link.ts")).unwrap();
+
+        let s = FileSources::with_packages(&app, &[("kit".into(), kit.clone())]);
+        assert_eq!(s.read("@kit/ui/Icon.tsx").as_deref(), Some("icon"));
+        assert_eq!(
+            s.read("@other/ui/Icon.tsx"),
+            None,
+            "undeclared packages do not exist"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            s.read("@kit/ui/link.ts"),
+            None,
+            "a package cannot reach into the app"
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

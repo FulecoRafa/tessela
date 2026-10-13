@@ -226,30 +226,60 @@ pub trait Sources: Send + Sync {
 /// File extensions tried, in order, for an import without one.
 pub const IMPORT_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js", "luau", "lua"];
 
-/// Resolve `spec`, imported from the file `base`, to a path relative to the
-/// root. Only relative imports exist, and they cannot leave the root.
+/// Resolve `spec`, imported from the file `base`, to a path for [`Sources`].
+/// Two kinds of imports exist:
+///
+/// - relative (`./x`, `../x`): inside the importer's own root, the project or
+///   the package the importer belongs to;
+/// - packages (`@kit/x`): files of a root the project declares. The path
+///   keeps the `@kit` prefix; the host maps it, and finds nothing for names
+///   the project did not declare.
+///
+/// Nothing else: no `fs`, no absolute paths, no URLs.
 pub fn resolve_import(base: &str, spec: &str) -> Result<String, String> {
-    if !(spec.starts_with("../") || spec.starts_with("./")) {
+    let (mut parts, rest): (Vec<&str>, &str) = if let Some(pkg) = spec.strip_prefix('@') {
+        let (name, rest) = pkg.split_once('/').ok_or_else(|| {
+            format!("cannot import '{spec}': name a file of the package (@name/file)")
+        })?;
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(format!("cannot import '{spec}': bad package name"));
+        }
+        (vec![&spec[..name.len() + 1]], rest)
+    } else if spec.starts_with("./") || spec.starts_with("../") {
+        let mut parts: Vec<&str> = base.split('/').collect();
+        parts.pop(); // the importing file itself
+        (parts, spec)
+    } else {
         return Err(format!(
-            "cannot import '{spec}': only relative imports of project files exist"
+            "cannot import '{spec}': only relative imports and project packages (@name/...) exist"
         ));
-    }
-    let mut parts: Vec<&str> = base.split('/').collect();
-    parts.pop(); // the importing file itself
-    for part in spec.split('/') {
+    };
+    // A package's files cannot climb out of it either.
+    let floor = usize::from(parts.first().is_some_and(|p| p.starts_with('@')));
+    for part in rest.split('/') {
         match part {
             "" | "." => {}
             ".." => {
-                if parts.pop().is_none() {
+                if parts.len() <= floor {
+                    let what = if floor == 1 {
+                        "the package"
+                    } else {
+                        "the project"
+                    };
                     return Err(format!(
-                        "cannot import '{spec}' from '{base}': outside the project"
+                        "cannot import '{spec}' from '{base}': outside {what}"
                     ));
                 }
+                parts.pop();
             }
             p => parts.push(p),
         }
     }
-    if parts.is_empty() {
+    if parts.len() <= floor {
         return Err(format!("cannot import '{spec}'"));
     }
     Ok(parts.join("/"))
@@ -740,5 +770,22 @@ mod tests {
         assert!(resolve_import("a.ts", "../x").is_err());
         assert!(resolve_import("a.ts", "fs").is_err());
         assert!(resolve_import("a.ts", "/etc/passwd").is_err());
+        // Packages: named roots, with the same confinement.
+        assert_eq!(
+            resolve_import("src/bar.tsx", "@kit/components/Icon").unwrap(),
+            "@kit/components/Icon"
+        );
+        assert_eq!(
+            resolve_import("@kit/components/Icon.tsx", "../lib/glyphs").unwrap(),
+            "@kit/lib/glyphs"
+        );
+        assert!(
+            resolve_import("@kit/Icon.tsx", "../../src/secret")
+                .unwrap_err()
+                .contains("outside the package")
+        );
+        assert!(resolve_import("a.ts", "@kit").is_err());
+        assert!(resolve_import("a.ts", "@../x").is_err());
+        assert!(resolve_import("a.ts", "@kit/../../x").is_err());
     }
 }

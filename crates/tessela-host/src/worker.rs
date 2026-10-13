@@ -263,7 +263,7 @@ impl Worker {
             name = r.name.clone();
             watched.extend(r.config);
             watched.push(r.root.join(&r.file));
-            let sources = Arc::new(FileSources::new(&r.root));
+            let sources = Arc::new(FileSources::with_packages(&r.root, &r.packages));
             let read = sources.clone();
             let source = tessela_core::Sources::read(&*sources, &r.file)
                 .ok_or_else(|| format!("cannot read {}", r.root.join(&r.file).display()))?;
