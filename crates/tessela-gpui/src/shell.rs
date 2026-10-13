@@ -56,8 +56,8 @@ pub struct Shell {
     pub font: Option<String>,
     pub theme: Theme,
     pub images: ImageResolver,
-    /// Run next to the desktop's own bar: top and bottom anchors swap, and no
-    /// surface reserves space.
+    /// Run next to the desktop's own bar: no surface reserves space, and all of
+    /// them, overlays and popups too, sit inside the space it reserves.
     pub dev_placement: bool,
     /// "dark" | "light" as the desktop changes it.
     pub scheme: Option<crossbeam_channel::Receiver<String>>,
@@ -102,6 +102,9 @@ struct Placement {
     exclusive: Option<f32>,
     /// Covers the output and draws the content inside (outside click dismisses).
     overlay: bool,
+    /// Placed beside the desktop's own bar (`--dev`): reserves nothing and,
+    /// overlays included, stays out of the space other surfaces reserve.
+    beside: bool,
     keyboard: bool,
 }
 
@@ -110,16 +113,12 @@ impl Placement {
         let p = P(r);
         let anchor = p.str("anchor").unwrap_or_default();
         let has = |e: &str| anchor.split_whitespace().any(|a| a == e);
-        let (mut top, mut bottom) = (has("top"), has("bottom"));
-        let mut margin = r
+        let (top, bottom) = (has("top"), has("bottom"));
+        let margin = r
             .props
             .get("margin")
             .and_then(styled::sides)
             .unwrap_or([0.0; 4]);
-        if dev {
-            std::mem::swap(&mut top, &mut bottom);
-            margin.swap(0, 2);
-        }
         let layer = match p.str("layer").as_deref() {
             Some("background") => Layer::Background,
             Some("bottom") => Layer::Bottom,
@@ -137,6 +136,7 @@ impl Placement {
             margin,
             exclusive: if dev { None } else { p.f32("exclusive") },
             overlay: r.props.contains_key("on_dismiss"),
+            beside: dev,
             keyboard: false,
         }
     }
@@ -145,8 +145,8 @@ impl Placement {
     fn fallback(dev: bool) -> Self {
         Placement {
             layer: Layer::Overlay,
-            top: !dev,
-            bottom: dev,
+            top: true,
+            bottom: false,
             left: true,
             right: false,
             width: 640.0,
@@ -154,11 +154,12 @@ impl Placement {
             margin: [8.0, 0.0, 8.0, 8.0],
             exclusive: None,
             overlay: false,
+            beside: dev,
             keyboard: false,
         }
     }
 
-    fn popup() -> Self {
+    fn popup(dev: bool) -> Self {
         Placement {
             layer: Layer::Overlay,
             top: true,
@@ -170,6 +171,7 @@ impl Placement {
             margin: [0.0; 4],
             exclusive: None,
             overlay: true,
+            beside: dev,
             keyboard: false,
         }
     }
@@ -207,9 +209,10 @@ impl Placement {
                 namespace,
                 layer: self.layer,
                 anchor,
-                // Overlays ignore other surfaces' reserved space (-1).
+                // Overlays ignore other surfaces' reserved space (-1), unless placed
+                // beside the desktop's bar (0: below it, like the dev bar).
                 exclusive_zone: if self.overlay {
-                    Some(px(-1.0))
+                    Some(px(if self.beside { 0.0 } else { -1.0 }))
                 } else {
                     self.exclusive.map(px)
                 },
@@ -326,7 +329,7 @@ impl Model {
             placement.keyboard = has_kind(tree, id, styled::INPUT);
             out.push((WindowKey::Surface(slot), placement));
             for popup in open_popups(tree, id) {
-                let mut p = Placement::popup();
+                let mut p = Placement::popup(self.dev);
                 p.keyboard = has_kind(tree, popup, styled::INPUT);
                 out.push((WindowKey::Popup(slot, popup), p));
             }

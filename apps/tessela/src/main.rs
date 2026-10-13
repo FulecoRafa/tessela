@@ -6,7 +6,7 @@
 //! ```
 //!
 //! `--dev` places surfaces next to the desktop's own bar instead of over it:
-//! top and bottom anchors swap and nothing reserves space.
+//! nothing reserves space and everything sits below (or beside) that bar.
 //! `--nested` renders into a headless sway of its own (see nested.rs), for
 //! previews and screenshots without a screen.
 //!
