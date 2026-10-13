@@ -659,3 +659,15 @@ fn js_imports_resolve_inside_the_project_only() {
         assert!(err.contains(needle), "{entry}: {err}");
     }
 }
+
+#[test]
+fn jsx_survives_a_variable_named_h() {
+    let files = [(
+        "main.tsx",
+        r#"const hours = ["22h", "23h"];
+           export default <Row>{hours.map((h) => <Text key={h} text={h} />)}</Row>;"#,
+    )];
+    let node = project("main.tsx", &files).unwrap();
+    assert_eq!(node.children.len(), 2, "{node:?}");
+    assert_eq!(node.children[1].str("text"), Some("23h"));
+}

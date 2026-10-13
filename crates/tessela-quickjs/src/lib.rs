@@ -84,8 +84,10 @@ pub fn transpile(source: &str, file: &str) -> Result<String, GuestError> {
     let options = TransformOptions {
         jsx: JsxOptions {
             runtime: JsxRuntime::Classic,
-            pragma: Some("h".into()),
-            pragma_frag: Some("Fragment".into()),
+            // Not `h`: a guest variable named `h` (`hours.map((h) => ...)`)
+            // would shadow the factory and break every JSX element in scope.
+            pragma: Some("__jsx".into()),
+            pragma_frag: Some("__jsxFragment".into()),
             pure: false,
             display_name_plugin: false,
             ..JsxOptions::enable()

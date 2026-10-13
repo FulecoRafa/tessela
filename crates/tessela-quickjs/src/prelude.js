@@ -35,7 +35,8 @@
     return out;
   };
 
-  const globals = { signal, persist, log, h, Fragment };
+  // `__jsx` is what transpiled JSX calls; `h` is the same, for hand-written trees.
+  const globals = { signal, persist, log, h, Fragment, __jsx: h, __jsxFragment: Fragment };
   for (const c of dec(host.components)) globals[c.name] = c.name;
   for (const [k, v] of Object.entries(globals)) {
     Object.defineProperty(globalThis, k, { value: v, writable: false, configurable: false, enumerable: false });
