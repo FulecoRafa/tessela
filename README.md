@@ -22,16 +22,20 @@ Linux (`apps/marathon`).
 crates/
   tessela          fachada: re-exporta tudo atrás de features
   tessela-core     grafo reativo, Instance, traits Engine e Module (sem I/O)
-  tessela-view     vocabulário (Row, Column, Text, Icon, Pill, Button, Progress, Spacer), schemas, patches
+  tessela-view     vocabulário (núcleo + Box, Label, Image, Ring, Popup, Input, Surface), schemas, patches
   tessela-host     manifestos, pool de workers, hot reload, trait Renderer, renderer Headless
   tessela-luau     engine Luau            (feature luau)
   tessela-quickjs  engine JS/TSX          (feature quickjs)
   tessela-unix     módulo de serviços     (feature unix)
   tessela-timer    módulo de timers       (feature timer)
+  tessela-state    estado compartilhado   (feature state)
+  tessela-desktop  ctx, hyprland, system, apps, tray (feature desktop)
   tessela-tui      renderer de terminal   (feature tui)
-  tessela-gpui     renderer GPUI          (feature gpui)
+  tessela-gpui     renderer GPUI          (feature gpui): LayerBar e Shell (uma janela por superfície)
   tessela-proto    protocolo dos serviços
-apps/marathon      a shell
+apps/tessela       `tessela run` (projetos) e `tessela devtools`
+apps/marathon      a barra de exemplo
+vendor/            dependências com correções locais (ver vendor/README.md)
 sdk/{go,python}    helpers para escrever serviços
 services/          serviços de exemplo (power em Go, sys em Python)
 widgets/           widgets da marathon (Luau e TSX)
@@ -54,6 +58,24 @@ App::builder()
     .build()?
     .run(Headless::new())                              // ou Tui, ou gpui::LayerBar
 ```
+
+## Rodando um projeto
+
+Um projeto é uma pasta com `tessela.toml`: superfícies (uma entrada TSX ou
+Luau por janela), pacotes importáveis como `@nome/...`, plugins (serviços que
+o runner mantém vivos) e tokens de tema. Exemplo completo:
+[`../adwaita-shell`](../adwaita-shell) (barra, gaveta, launcher e o pacote `@kit`).
+
+```sh
+nix develop                                     # Rust, Go, Python, libs do GPUI, sway, grim
+cargo build -p tessela-cli
+./target/debug/tessela run ../adwaita-shell --dev        # ao lado da barra do desktop
+./target/debug/tessela run ../adwaita-shell --nested     # num sway headless próprio
+./target/debug/tessela run ../adwaita-shell --devtools   # e em outro terminal:
+./target/debug/tessela devtools                         # overview, tree, calls, frames, click, set, shot...
+```
+
+Decisões: [ADR 0015](docs/adr/0015-projetos.md) a [0018](docs/adr/0018-devtools.md).
 
 ## Rodando a marathon
 
