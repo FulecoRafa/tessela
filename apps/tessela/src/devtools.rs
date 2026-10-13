@@ -81,8 +81,12 @@ fn ms(d: Duration) -> f64 {
     (d.as_secs_f64() * 1e6).round() / 1e3
 }
 
-/// `fn#12`, `action:service.call(...)`: handlers as devtools show them.
-fn handler_label(v: &Value) -> Option<String> {
+/// `fn#12`, `action:service.call(...)`: handlers as devtools show them. Only
+/// `on_*` props hold handlers (a bare number would parse as one).
+fn handler_label(key: &str, v: &Value) -> Option<String> {
+    if !key.starts_with("on_") {
+        return None;
+    }
     match Handler::from_value(v)? {
         Handler::Fn(id) => Some(format!("fn#{id}")),
         Handler::Action { action } => Some(format!("action:{}.{}", action.module, action.func)),
@@ -102,7 +106,12 @@ fn describe(tree: Option<&ViewTree>, p: &tessela::view::Patch) -> String {
         Patch::Update { id, set, unset } => {
             let mut parts: Vec<String> = set
                 .iter()
-                .map(|(k, v)| format!("{k}={}", handler_label(v).unwrap_or_else(|| short(v, 24))))
+                .map(|(k, v)| {
+                    format!(
+                        "{k}={}",
+                        handler_label(k, v).unwrap_or_else(|| short(v, 24))
+                    )
+                })
                 .collect();
             parts.extend(unset.iter().map(|k| format!("-{k}")));
             format!("#{id} {} {}", kind(id), parts.join(" "))
@@ -125,7 +134,7 @@ fn tree_json(tree: &ViewTree, id: NodeId, depth: usize, max: usize) -> Value {
         .map(|(k, v)| {
             (
                 k.clone(),
-                handler_label(v)
+                handler_label(k, v)
                     .map(Value::String)
                     .unwrap_or_else(|| v.clone()),
             )
