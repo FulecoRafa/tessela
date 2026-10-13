@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = ["gpui"]
-gpui = ["tessela/gpui", "dep:futures"]
+gpui = ["tessela/gpui", "dep:gpui", "dep:gpui_platform", "dep:futures"]
 
 [dependencies]
 tessela = { workspace = true, features = ["luau", "quickjs", "unix", "timer", "state", "desktop"] }
@@ -23,4 +23,7 @@ anyhow.workspace = true
 log.workspace = true
 crossbeam-channel.workspace = true
 libc = "0.2"
+# The graphical devtools (`tessela devtools ui`).
+gpui = { workspace = true, optional = true }
+gpui_platform = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }

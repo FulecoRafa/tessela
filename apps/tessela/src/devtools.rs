@@ -16,7 +16,8 @@
 //! Actions: `click` triggers a node's handler as if the user did it; `shot`
 //! captures a surface's window with grim; `highlight` outlines a node in the
 //! running shell and `pick` makes the next click there select a node instead
-//! (reported on the `picks` channel).
+//! (reported on the `picks` channel). `tessela devtools ui` is the graphical
+//! client (devtools_ui).
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
@@ -35,7 +36,7 @@ use tessela::view::{Handler, NodeId, ViewTree};
 const RING: usize = 1000;
 /// Signal values up to this size (JSON bytes) are kept with their delivery.
 const SIGNAL_VALUE_MAX: usize = 4096;
-const CHANNELS: &[&str] = &[
+pub(crate) const CHANNELS: &[&str] = &[
     "console",
     "calls",
     "events",
@@ -735,9 +736,10 @@ tessela devtools [--project NAME] <command>
   shot <surface> [file.png]     capture the surface's window (grim)
   node <surface> <id>           one node: props, handlers, path, drawn bounds
   highlight <surface> <id>|off  outline a node in the running shell
-  pick                          next click in the shell selects a node; prints it";
+  pick                          next click in the shell selects a node; prints it
+  ui                            graphical devtools (a window of its own)";
 
-fn socket(project: Option<&str>) -> anyhow::Result<PathBuf> {
+pub(crate) fn socket(project: Option<&str>) -> anyhow::Result<PathBuf> {
     let runtime = PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
         .join("tessela");
     if let Some(p) = project {
@@ -766,7 +768,7 @@ fn socket(project: Option<&str>) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn ask(sock: &Path, req: Value) -> anyhow::Result<Value> {
+pub(crate) fn ask(sock: &Path, req: Value) -> anyhow::Result<Value> {
     let mut s =
         UnixStream::connect(sock).with_context(|| format!("connecting to {}", sock.display()))?;
     writeln!(s, "{req}")?;
@@ -923,7 +925,8 @@ fn print_record(channel: &str, r: &Value) {
     println!("{t:>9.3}s {line}");
 }
 
-fn shot(sock: &Path, surface: &str, file: Option<String>) -> anyhow::Result<()> {
+/// Captures a surface's window with grim; returns `file (geometry)`.
+pub(crate) fn shot(sock: &Path, surface: &str, file: Option<String>) -> anyhow::Result<String> {
     let g = ask(sock, json!({ "op": "geometry", "surface": surface }))?;
     let (w, s) = (&g["window"], &g["screen"]);
     let (sw, sh) = (
@@ -974,12 +977,10 @@ fn shot(sock: &Path, surface: &str, file: Option<String>) -> anyhow::Result<()> 
     if let Some(display) = g["display"].as_str() {
         grim.env("WAYLAND_DISPLAY", display);
     }
-    let status = grim.status();
-    match status {
-        Ok(s) if s.success() => println!("{file} ({geometry})"),
+    match grim.status() {
+        Ok(s) if s.success() => Ok(format!("{file} ({geometry})")),
         _ => anyhow::bail!("grim failed or is missing; run: grim -g \"{geometry}\" {file}"),
     }
-    Ok(())
 }
 
 pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
@@ -995,6 +996,9 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
     if rest.first().map(String::as_str) == Some("--help") {
         println!("{USAGE}");
         return Ok(());
+    }
+    if rest.first().map(String::as_str) == Some("ui") {
+        return ui(project);
     }
     let sock = socket(project.as_deref())?;
     let cmd = rest.first().cloned().unwrap_or_else(|| "overview".into());
@@ -1155,7 +1159,10 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
                 ask(&sock, json!({ "op": "set", "key": key, "value": value }))?
             );
         }
-        "shot" => shot(&sock, &arg(1).context("shot <surface>")?, arg(2))?,
+        "shot" => println!(
+            "{}",
+            shot(&sock, &arg(1).context("shot <surface>")?, arg(2))?
+        ),
         "node" => {
             let (surface, id) = (
                 arg(1).context("node <surface> <id>")?,
@@ -1217,6 +1224,16 @@ fn watch(sock: &Path, channels: Vec<String>) -> anyhow::Result<()> {
         print_record(channel, &v["record"]);
     }
     Ok(())
+}
+
+#[cfg(feature = "gpui")]
+fn ui(project: Option<String>) -> anyhow::Result<()> {
+    crate::devtools_ui::run(project)
+}
+
+#[cfg(not(feature = "gpui"))]
+fn ui(_: Option<String>) -> anyhow::Result<()> {
+    anyhow::bail!("built without the `gpui` feature: no graphical devtools")
 }
 
 #[cfg(test)]

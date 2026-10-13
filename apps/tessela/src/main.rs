@@ -14,6 +14,8 @@
 //! Other crates (GPUI, zbus...) only log warnings.
 
 mod devtools;
+#[cfg(feature = "gpui")]
+mod devtools_ui;
 mod nested;
 mod plugins;
 mod project;
