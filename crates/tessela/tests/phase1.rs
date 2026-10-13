@@ -645,3 +645,35 @@ fn memos_spare_readers_when_the_result_is_unchanged() {
         );
     }
 }
+
+#[test]
+fn hidden_surfaces_and_closed_popups_skip_their_content() {
+    let src = r#"
+        const shown = signal(false);
+        export default <Surface anchor="top" height={10} visible={shown}>
+          <Text text={() => { log("content"); return "x"; }} />
+          <Popup open={false} width={10}><Text text={() => { log("menu"); return "m"; }} /></Popup>
+        </Surface>;"#;
+    let mut h = h("s.tsx", src, &[], vec![]);
+    let node = h.inst.render();
+    assert!(
+        node.children.is_empty(),
+        "hidden surface has no content: {node:?}"
+    );
+    assert!(h.inst.take_logs().is_empty());
+
+    let mut h = self::h(
+        "v.tsx",
+        &src.replace("signal(false)", "signal(true)"),
+        &[],
+        vec![],
+    );
+    let node = h.inst.render();
+    assert_eq!(node.children.len(), 2);
+    assert_eq!(
+        h.inst.take_logs(),
+        vec!["content".to_string()],
+        "closed popup content never ran"
+    );
+    assert!(node.children[1].children.is_empty());
+}

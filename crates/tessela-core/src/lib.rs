@@ -686,7 +686,21 @@ impl Instance {
             Value::Object(m) if m.len() == 1 && m.contains_key(ACTION) => v.clone(),
             Value::Object(m) => {
                 let mut out = Map::with_capacity(m.len());
+                // A hidden surface or a closed popup shows nothing: leave its
+                // children unevaluated (their bindings keep their caches).
+                let gate = match m.get("type").and_then(Value::as_str) {
+                    Some(view::styled::SURFACE) => Some("visible"),
+                    Some(view::styled::POPUP) => Some("open"),
+                    _ => None,
+                };
+                let hidden = match gate.and_then(|g| m.get(g)) {
+                    Some(v) => self.materialize(v, depth + 1)? == Value::Bool(false),
+                    None => false,
+                };
                 for (k, val) in m {
+                    if hidden && k == "children" {
+                        continue;
+                    }
                     out.insert(k.clone(), self.materialize(val, depth + 1)?);
                 }
                 Value::Object(out)
