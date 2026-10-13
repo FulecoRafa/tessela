@@ -198,6 +198,22 @@ impl ModuleCx<'_> {
     }
 }
 
+// ---------------------------------------------------------------- tracing
+
+/// One module call, made by guest code or a declarative action.
+#[derive(Debug, Clone)]
+pub struct InvokeRecord {
+    pub extension: String,
+    pub module: String,
+    pub func: String,
+    pub args: Value,
+    pub result: Result<Value, String>,
+    pub took: Duration,
+}
+
+/// Receives an [`InvokeRecord`] per module call; for devtools.
+pub type InvokeTrace = Arc<dyn Fn(InvokeRecord) + Send + Sync>;
+
 // ---------------------------------------------------------------- sources
 
 /// The files an entry may import, by path relative to its root (`src/a.tsx`).
@@ -251,6 +267,7 @@ pub struct HostCtx {
     sink: Sink,
     bucket: Cell<(f64, Instant)>,
     sources: Option<Arc<dyn Sources>>,
+    trace: Option<InvokeTrace>,
 }
 
 impl HostCtx {
@@ -300,6 +317,23 @@ impl HostCtx {
     }
 
     pub fn invoke(&self, module: &str, func: &str, args: Value) -> Result<Value, String> {
+        let Some(trace) = &self.trace else {
+            return self.invoke_untraced(module, func, args);
+        };
+        let started = Instant::now();
+        let result = self.invoke_untraced(module, func, args.clone());
+        trace(InvokeRecord {
+            extension: self.core.borrow().extension.clone(),
+            module: module.to_string(),
+            func: func.to_string(),
+            args,
+            result: result.clone(),
+            took: started.elapsed(),
+        });
+        result
+    }
+
+    fn invoke_untraced(&self, module: &str, func: &str, args: Value) -> Result<Value, String> {
         let (index, m) = self
             .modules
             .iter()
@@ -414,6 +448,8 @@ pub struct InstanceSpec<'a> {
     pub persist: Option<PersistStore>,
     /// Files the entry may import; `None` = a single-file extension.
     pub sources: Option<Arc<dyn Sources>>,
+    /// Sees every module call (devtools); `None` costs nothing.
+    pub trace: Option<InvokeTrace>,
 }
 
 /// One loaded extension: an engine, its graph and its exported root.
@@ -456,6 +492,7 @@ impl Instance {
             sink: spec.sink,
             bucket: Cell::new((spec.limits.calls_per_sec as f64, Instant::now())),
             sources: spec.sources,
+            trace: spec.trace,
         });
         let mut engine = factory.create(ctx.clone())?;
         ctx.arm();

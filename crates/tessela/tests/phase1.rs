@@ -49,6 +49,7 @@ fn build(
         }),
         persist,
         sources: None,
+        trace: None,
     })
     .map_err(|e| e.0)?;
     Ok(H { inst, inbound })

@@ -12,6 +12,7 @@
 
 mod headless;
 mod manifest;
+mod probe;
 mod sources;
 mod worker;
 
@@ -26,6 +27,7 @@ use tessela_core::{EngineFactory, Handler, Module, Node};
 
 pub use headless::Headless;
 pub use manifest::Manifest;
+pub use probe::{GraphStats, Probe};
 pub use sources::Entry;
 
 use sources::Origin;
@@ -138,6 +140,7 @@ pub struct AppBuilder {
     vocabulary: Vocabulary,
     extensions: Vec<Origin>,
     workers: usize,
+    probe: Option<Arc<dyn Probe>>,
 }
 
 impl Default for AppBuilder {
@@ -151,6 +154,7 @@ impl Default for AppBuilder {
             vocabulary: Vocabulary::default(),
             extensions: Vec::new(),
             workers: cores.clamp(1, 4),
+            probe: None,
         }
     }
 }
@@ -196,6 +200,12 @@ impl AppBuilder {
         self
     }
 
+    /// Watch the host work (devtools). See [`Probe`].
+    pub fn probe(mut self, probe: Arc<dyn Probe>) -> Self {
+        self.probe = Some(probe);
+        self
+    }
+
     /// Worker threads shared by all extensions (default: cores, at most 4).
     pub fn workers(mut self, n: usize) -> Self {
         self.workers = n.max(1);
@@ -213,6 +223,7 @@ impl AppBuilder {
             vocabulary: Arc::new(self.vocabulary),
             extensions: self.extensions,
             workers: self.workers,
+            probe: self.probe,
         })
     }
 }
@@ -223,6 +234,7 @@ pub struct App {
     vocabulary: Arc<Vocabulary>,
     extensions: Vec<Origin>,
     workers: usize,
+    probe: Option<Arc<dyn Probe>>,
 }
 
 impl App {
@@ -261,8 +273,12 @@ impl App {
             vocabulary: self.vocabulary,
             supported,
             frames: frames_tx,
+            probe: self.probe.clone(),
         });
         let (slots, workers) = worker::spawn_pool(shared, self.extensions, self.workers);
+        if let Some(p) = &self.probe {
+            p.started(&slots);
+        }
         Surface {
             slots,
             frames,

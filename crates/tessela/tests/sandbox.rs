@@ -74,6 +74,7 @@ impl Harness {
             }),
             persist,
             sources: None,
+            trace: None,
         })
         .map_err(|e| e.0)?;
         Ok(Self { inst, inbound })
@@ -618,6 +619,7 @@ fn project(entry: &str, files: &[(&str, &str)]) -> Result<Node, String> {
         sink: Sink::none(),
         persist: None,
         sources: Some(Arc::new(MapSources(sources))),
+        trace: None,
     })
     .map_err(|e| e.0)?;
     Ok(inst.render())
