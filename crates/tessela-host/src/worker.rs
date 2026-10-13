@@ -228,10 +228,10 @@ impl Worker {
     }
 
     fn logs(probe: &Option<Arc<dyn Probe>>, slot: usize, inst: &mut Instance) {
-        for line in inst.take_logs() {
-            log::info!("[{}] {line}", inst.name);
+        for line in inst.take_log_lines() {
+            log::info!(target: "tessela::guest", "[{}] {}", inst.name, line.text);
             if let Some(p) = probe {
-                p.log(slot, &line);
+                p.log_at(slot, &line.text, line.at.as_deref());
             }
         }
     }

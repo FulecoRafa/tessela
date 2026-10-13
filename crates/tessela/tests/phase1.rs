@@ -677,3 +677,31 @@ fn hidden_surfaces_and_closed_popups_skip_their_content() {
     );
     assert!(node.children[1].children.is_empty());
 }
+
+#[test]
+fn logs_know_where_they_were_called() {
+    for (file, src, line) in [
+        (
+            "w.luau",
+            "local x = 1\n\nlog('hi', x)\nreturn Text { text = 'a' }",
+            3,
+        ),
+        // TSX is transpiled: the line is mapped back to the source.
+        (
+            "w.tsx",
+            "type T = { a: number };\nconst t: T = { a: 1 };\n\nlog(\"hi\", t.a);\nexport default <Text text=\"a\" />;",
+            4,
+        ),
+    ] {
+        let mut h = h(file, src, &[], vec![]);
+        h.inst.render();
+        let lines = h.inst.take_log_lines();
+        assert_eq!(lines.len(), 1, "{file}");
+        assert_eq!(lines[0].text, "hi 1", "{file}");
+        assert_eq!(
+            lines[0].at.as_deref(),
+            Some(format!("{file}:{line}").as_str()),
+            "{file}"
+        );
+    }
+}

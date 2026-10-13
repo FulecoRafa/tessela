@@ -25,7 +25,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
-pub use reactive::{Core, FnId, FnKind, Grants, HostError, PersistStore, ResourceRef, SigId};
+pub use reactive::{
+    Core, FnId, FnKind, Grants, HostError, LogLine, PersistStore, ResourceRef, SigId,
+};
 pub use tessela_view as view;
 pub use tessela_view::{Action, Handler, Node, Vocabulary};
 
@@ -632,6 +634,11 @@ impl Instance {
 
     pub fn take_logs(&mut self) -> Vec<String> {
         self.ctx.core.borrow_mut().take_logs()
+    }
+
+    /// Like [`take_logs`](Self::take_logs), with where each line came from.
+    pub fn take_log_lines(&mut self) -> Vec<LogLine> {
+        self.ctx.core.borrow_mut().take_log_lines()
     }
 
     /// (live bindings, live signals) — exposed for leak tests.

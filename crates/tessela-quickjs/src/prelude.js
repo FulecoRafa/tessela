@@ -21,7 +21,8 @@
   const signal = (initial) => wrap(host.sigNew(enc(initial)));
   // Like `signal`, but the value survives reloads of this extension.
   const persist = (key, initial) => wrap(host.persist(String(key), enc(initial)));
-  const log = (...parts) => host.log(parts.map(String).join(" "));
+  // The stack tells devtools where the call came from.
+  const log = (...parts) => host.log(parts.map(String).join(" "), new Error().stack);
   // A derived value: `f` re-runs when what it reads changes, and code that
   // reads the memo re-runs only when the result differs (Solid's createMemo).
   const memo = (f) => {

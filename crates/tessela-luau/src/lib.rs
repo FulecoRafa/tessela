@@ -296,8 +296,9 @@ impl LuaEngine {
         let h = host.clone();
         t.set(
             "log",
-            lua.create_function(move |_, msg: String| {
-                h.core.borrow_mut().log(msg);
+            lua.create_function(move |lua, msg: String| {
+                let at = caller(lua);
+                h.core.borrow_mut().log_at(msg, at);
                 Ok(())
             })?,
         )?;
@@ -354,4 +355,17 @@ impl Engine for LuaEngine {
             fns.remove(id);
         }
     }
+}
+
+/// `file:line` of the guest code that called `log`: the first frame in a
+/// file (chunks named `@file`), past the prelude and host functions.
+fn caller(lua: &Lua) -> Option<String> {
+    (1..8).find_map(|level| {
+        lua.inspect_stack(level, |d| {
+            let source = d.source().source?.to_string();
+            let file = source.strip_prefix('@')?.to_string();
+            Some(format!("{file}:{}", d.current_line()?))
+        })
+        .flatten()
+    })
 }

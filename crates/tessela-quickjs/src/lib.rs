@@ -42,10 +42,15 @@ impl EngineFactory for QuickJs {
 
 type FnMap = Rc<RefCell<HashMap<FnId, Persistent<Function<'static>>>>>;
 
+/// Per loaded file: the original line of each line of transpiled code, so
+/// `log` can tell where it was called from (0: unknown).
+type Lines = Rc<RefCell<HashMap<String, Vec<u32>>>>;
+
 struct JsEngine {
     // Field order is drop order: persistent handles must go before the
     // context, and the context before the runtime, or QuickJS aborts.
     fns: FnMap,
+    lines: Lines,
     host: Rc<HostCtx>,
     ctx: Context,
     _rt: Runtime,
@@ -61,8 +66,14 @@ impl Drop for JsEngine {
 
 /// TSX/TS/JSX → plain ES module.
 pub fn transpile(source: &str, file: &str) -> Result<String, GuestError> {
+    transpile_mapped(source, file).map(|(code, _)| code)
+}
+
+/// [`transpile`], plus the original line of each output line (1-based; 0
+/// where unknown).
+fn transpile_mapped(source: &str, file: &str) -> Result<(String, Vec<u32>), GuestError> {
     use oxc::allocator::Allocator;
-    use oxc::codegen::Codegen;
+    use oxc::codegen::{Codegen, CodegenOptions};
     use oxc::parser::Parser;
     use oxc::semantic::SemanticBuilder;
     use oxc::span::SourceType;
@@ -99,7 +110,49 @@ pub fn transpile(source: &str, file: &str) -> Result<String, GuestError> {
     if let Some(err) = ret.diagnostics.first() {
         return Err(GuestError(format!("{file}: {err}")));
     }
-    Ok(Codegen::new().build(&program).code)
+    let out = Codegen::new()
+        .with_options(CodegenOptions {
+            source_map_path: Some(path.to_path_buf()),
+            ..CodegenOptions::default()
+        })
+        .build(&program);
+    let mut lines = vec![0u32; out.code.lines().count() + 1];
+    for t in out.map.iter().flat_map(|m| m.get_tokens()) {
+        if let Some(l) = lines.get_mut(t.get_dst_line() as usize)
+            && *l == 0
+        {
+            *l = t.get_src_line() + 1;
+        }
+    }
+    Ok((out.code, lines))
+}
+
+/// `file:line` of the guest code that called `log`, from an `Error().stack`:
+/// the first frame in a loaded file, its line mapped back to the source.
+fn caller(stack: &str, lines: &HashMap<String, Vec<u32>>) -> Option<String> {
+    stack.lines().find_map(|frame| {
+        // `    at name (file:line:col)` or `    at file:line`
+        let loc = frame.trim().strip_prefix("at ")?;
+        let loc = match (loc.rfind('('), loc.ends_with(')')) {
+            (Some(i), true) => &loc[i + 1..loc.len() - 1],
+            _ => loc,
+        };
+        let mut parts = loc.rsplitn(3, ':').collect::<Vec<_>>();
+        parts.reverse();
+        let (file, line) = match parts.as_slice() {
+            [file, line, _col] if line.parse::<u32>().is_ok() => (*file, *line),
+            [file, line] | [_, file, line] => (*file, *line),
+            _ => return None,
+        };
+        let map = lines.get(file)?;
+        let n: usize = line.parse().ok()?;
+        let src = map.get(n.checked_sub(1)?).copied().unwrap_or(0);
+        Some(if src > 0 {
+            format!("{file}:{src}")
+        } else {
+            file.to_string()
+        })
+    })
 }
 
 fn exception(ctx: &Ctx<'_>, e: rquickjs::Error) -> GuestError {
@@ -149,6 +202,7 @@ struct ProjectLoader {
     host: Rc<HostCtx>,
     sources: std::sync::Arc<dyn Sources>,
     found: Rc<RefCell<HashMap<String, String>>>,
+    lines: Lines,
 }
 
 impl ProjectLoader {
@@ -212,7 +266,8 @@ impl Loader for ProjectLoader {
                 .read(name)
                 .ok_or_else(|| throw(ctx, format!("cannot load '{name}'")))?,
         };
-        let code = transpile(&source, name).map_err(|e| throw(ctx, e))?;
+        let (code, lines) = transpile_mapped(&source, name).map_err(|e| throw(ctx, e))?;
+        self.lines.borrow_mut().insert(name.to_string(), lines);
         let module = Module::declare(ctx.clone(), name, code)?;
         // Reading and transpiling ran on the host; it is not guest CPU time.
         self.host.rearm();
@@ -303,7 +358,12 @@ impl ToJson<'_> {
     }
 }
 
-fn install_host<'js>(ctx: &Ctx<'js>, host: &Rc<HostCtx>, fns: &FnMap) -> rquickjs::Result<()> {
+fn install_host<'js>(
+    ctx: &Ctx<'js>,
+    host: &Rc<HostCtx>,
+    fns: &FnMap,
+    lines: &Lines,
+) -> rquickjs::Result<()> {
     let t = rquickjs::Object::new(ctx.clone())?;
     let parse = |s: &str| serde_json::from_str::<Value>(s).unwrap_or(Value::Null);
 
@@ -395,12 +455,16 @@ fn install_host<'js>(ctx: &Ctx<'js>, host: &Rc<HostCtx>, fns: &FnMap) -> rquickj
             },
         )?,
     )?;
-    let h = host.clone();
+    let (h, lines) = (host.clone(), lines.clone());
     t.set(
         "log",
-        Function::new(ctx.clone(), move |msg: String| {
-            h.core.borrow_mut().log(msg);
-        })?,
+        Function::new(
+            ctx.clone(),
+            move |msg: String, stack: rquickjs::function::Opt<String>| {
+                let at = stack.0.and_then(|s| caller(&s, &lines.borrow()));
+                h.core.borrow_mut().log_at(msg, at);
+            },
+        )?,
     )?;
     let components: Vec<Value> = host
         .components()
@@ -418,23 +482,26 @@ impl JsEngine {
         rt.set_max_stack_size(512 * 1024);
         let h = host.clone();
         rt.set_interrupt_handler(Some(Box::new(move || h.budget_exceeded())));
+        let lines: Lines = Rc::default();
         if let Some(sources) = host.sources() {
             let loader = ProjectLoader {
                 host: host.clone(),
                 sources: sources.clone(),
                 found: Rc::default(),
+                lines: lines.clone(),
             };
             let resolver = ProjectLoader {
                 host: host.clone(),
                 sources: sources.clone(),
                 found: loader.found.clone(),
+                lines: lines.clone(),
             };
             rt.set_loader(resolver, loader);
         }
         let ctx = Context::full(&rt).map_err(|e| GuestError(e.to_string()))?;
         let fns: FnMap = Rc::default();
         ctx.with(|ctx| -> Result<(), GuestError> {
-            install_host(&ctx, &host, &fns).map_err(|e| exception(&ctx, e))?;
+            install_host(&ctx, &host, &fns, &lines).map_err(|e| exception(&ctx, e))?;
             ctx.eval::<(), _>(PRELUDE).map_err(|e| exception(&ctx, e))?;
             for (name, code) in host.module_preludes(Lang::JavaScript) {
                 ctx.eval::<(), _>(code).map_err(|e| {
@@ -447,6 +514,7 @@ impl JsEngine {
         })?;
         Ok(Self {
             fns,
+            lines,
             host,
             ctx,
             _rt: rt,
@@ -456,7 +524,8 @@ impl JsEngine {
 
 impl Engine for JsEngine {
     fn load(&mut self, source: &str, file: &str) -> Result<Value, GuestError> {
-        let code = transpile(source, file)?;
+        let (code, lines) = transpile_mapped(source, file)?;
+        self.lines.borrow_mut().insert(file.to_string(), lines);
         let (host, fns) = (self.host.clone(), self.fns.clone());
         self.ctx.with(|ctx| {
             let declared =

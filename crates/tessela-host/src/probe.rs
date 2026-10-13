@@ -38,6 +38,11 @@ pub trait Probe: Send + Sync + 'static {
     fn event(&self, slot: usize, event: &UiEvent, took: Duration, error: Option<&str>) {}
     /// A line from the guest's `log(...)`.
     fn log(&self, slot: usize, line: &str) {}
+    /// The same, with where the guest called it (`file:line`), when the
+    /// engine knows. Defaults to [`log`](Self::log).
+    fn log_at(&self, slot: usize, line: &str, at: Option<&str>) {
+        self.log(slot, line);
+    }
     /// A module call, from guest code or a declarative action.
     fn invoke(&self, slot: usize, record: InvokeRecord) {}
 }

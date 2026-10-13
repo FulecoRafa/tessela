@@ -108,7 +108,7 @@ pub struct Core {
     owned: HashMap<Option<FnId>, Vec<Owned>>,
     owner: Option<FnId>,
     tracking: Vec<HashSet<SigId>>,
-    logs: Vec<String>,
+    logs: Vec<LogLine>,
     /// Guest functions disposed since the engine last collected them.
     released_fns: Vec<FnId>,
     /// Module resources disposed since the instance last released them.
@@ -116,6 +116,14 @@ pub struct Core {
     live_resources: usize,
     max_resources: usize,
     persist: Option<PersistStore>,
+}
+
+/// One `log(...)` from the guest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogLine {
+    pub text: String,
+    /// `file:line` of the call, when the engine knows it.
+    pub at: Option<String>,
 }
 
 impl Core {
@@ -340,7 +348,13 @@ impl Core {
     }
 
     pub fn log(&mut self, message: String) {
-        self.logs.push(message);
+        self.log_at(message, None);
+    }
+
+    /// A log line with where the guest called `log` (`file:line`), when the
+    /// engine knows.
+    pub fn log_at(&mut self, message: String, at: Option<String>) {
+        self.logs.push(LogLine { text: message, at });
     }
 
     pub fn current_owner(&self) -> Option<FnId> {
@@ -350,6 +364,10 @@ impl Core {
     // ---- driver-facing ----------------------------------------------------
 
     pub fn take_logs(&mut self) -> Vec<String> {
+        self.take_log_lines().into_iter().map(|l| l.text).collect()
+    }
+
+    pub fn take_log_lines(&mut self) -> Vec<LogLine> {
         std::mem::take(&mut self.logs)
     }
 
