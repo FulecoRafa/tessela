@@ -162,6 +162,18 @@ impl ModuleCx<'_> {
             .map_err(|e| e.to_string())
     }
 
+    /// Like [`signal`](Self::signal), but owned by the instance instead of the
+    /// calling code: it lives until the extension unloads. For values every
+    /// part of an extension shares (a clock, a shared key), which the
+    /// module's prelude can then cache — calling again from inside a binding
+    /// only reads it.
+    pub fn root_signal(&mut self, initial: Value, resource: Option<u64>) -> Result<SigId, String> {
+        let prev = self.core.enter(None);
+        let r = self.signal(initial, resource);
+        self.core.leave(prev);
+        r
+    }
+
     /// Tie a non-signal resource (a timer, an in-flight request) to the
     /// caller. Returns the reference to send in [`Inbound::Finished`].
     pub fn own(&mut self, key: u64) -> Result<ResourceRef, String> {
