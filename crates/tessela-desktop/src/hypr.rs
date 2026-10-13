@@ -247,16 +247,16 @@ hyprland = table.freeze({{
             );
             topics.publish("screen", screen(&monitors));
         };
-        refresh(&hypr);
-        self.topics
-            .publish("keyboardLayout", main_layout(&hypr.json("devices")));
-
         // Bursts of events (a window opening fires several) cost one refresh.
+        // The first one runs here too, not on the worker that subscribed.
         let (tx, rx) = unbounded::<()>();
         let h = hypr.clone();
+        let layout = self.topics.clone();
         thread::Builder::new()
             .name("hyprland-refresh".into())
             .spawn(move || {
+                refresh(&h);
+                layout.publish("keyboardLayout", main_layout(&h.json("devices")));
                 while rx.recv().is_ok() {
                     thread::sleep(Duration::from_millis(25));
                     while rx.try_recv().is_ok() {}

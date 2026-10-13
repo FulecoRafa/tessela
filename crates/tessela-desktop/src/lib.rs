@@ -55,6 +55,12 @@ impl Default for Desktop {
 impl Desktop {
     pub fn new() -> Self {
         let icons = Arc::new(IconTheme::system());
+        // Index the theme in the background: the first lookup would walk
+        // thousands of files on a worker thread.
+        let warm = icons.clone();
+        std::thread::spawn(move || {
+            warm.lookup("application-x-executable");
+        });
         let hyprland = Arc::new(Hyprland::new());
         Self {
             context: Arc::new(Context::new(Some(hyprland.clone()))),

@@ -175,7 +175,7 @@ pub fn lookup<'a>(entries: &'a [DesktopEntry], app_id: &str) -> Option<&'a Deskt
 
 pub struct Apps {
     icons: Arc<IconTheme>,
-    entries: Mutex<Option<(Instant, Arc<Vec<DesktopEntry>>)>>,
+    entries: Arc<Mutex<Option<(Instant, Arc<Vec<DesktopEntry>>)>>>,
 }
 
 const JS: &str = r#"
@@ -213,10 +213,17 @@ pub(crate) fn icon_source(path: Option<PathBuf>) -> Value {
 
 impl Apps {
     pub fn new(icons: Arc<IconTheme>) -> Self {
-        Self {
-            icons,
-            entries: Mutex::default(),
-        }
+        // Scanning takes tens of milliseconds: do it before anyone asks,
+        // off the worker threads.
+        let entries: Arc<Mutex<Option<(Instant, Arc<Vec<DesktopEntry>>)>>> = Arc::default();
+        let warm = entries.clone();
+        thread::spawn(move || {
+            let scanned = Arc::new(scan());
+            warm.lock()
+                .unwrap()
+                .get_or_insert((Instant::now(), scanned));
+        });
+        Self { icons, entries }
     }
 
     pub fn entries(&self) -> Arc<Vec<DesktopEntry>> {

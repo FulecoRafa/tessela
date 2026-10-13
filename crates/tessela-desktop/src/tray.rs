@@ -425,19 +425,41 @@ tray = table.freeze({{
         }
     }
 
+    /// Connecting and registering take hundreds of milliseconds: never on
+    /// the worker thread that asked.
     fn start(&self) {
-        let conn = match Connection::session() {
+        let (topics, state, conn, icons) = (
+            self.topics.clone(),
+            self.state.clone(),
+            self.conn.clone(),
+            self.icons.clone(),
+        );
+        thread::Builder::new()
+            .name("tray".into())
+            .spawn(move || Self::connect(topics, state, conn, icons))
+            .expect("spawn tray");
+    }
+
+    fn connect(
+        all_topics: Arc<Topics>,
+        all_state: Arc<Mutex<State>>,
+        slot: Arc<Mutex<Option<Connection>>>,
+        all_icons: Arc<IconTheme>,
+    ) {
+        let host = format!("org.kde.StatusNotifierHost-{}-tessela", std::process::id());
+        let conn = match zbus::blocking::connection::Builder::session()
+            .and_then(|b| b.name(host.as_str()))
+            .and_then(|b| b.build())
+        {
             Ok(c) => c,
             Err(e) => {
                 log::warn!("tray: no session bus ({e}); the tray stays empty");
-                self.topics.publish("items", json!([]));
+                all_topics.publish("items", json!([]));
                 return;
             }
         };
-        *self.conn.lock().unwrap() = Some(conn.clone());
-        let host = format!("org.kde.StatusNotifierHost-{}-tessela", std::process::id());
+        *slot.lock().unwrap() = Some(conn.clone());
         let registered = (|| -> zbus::Result<Vec<String>> {
-            conn.request_name(host.as_str())?;
             let watcher = Proxy::new(&conn, WATCHER, WATCHER_PATH, WATCHER)?;
             watcher.call::<_, _, ()>("RegisterStatusNotifierHost", &(host.as_str(),))?;
             watcher.get_property("RegisteredStatusNotifierItems")
@@ -448,21 +470,14 @@ tray = table.freeze({{
                 log::warn!(
                     "tray: no StatusNotifierWatcher on the session bus ({e}); the tray stays empty"
                 );
-                self.topics.publish("items", json!([]));
+                all_topics.publish("items", json!([]));
                 return;
             }
         };
-        self.topics.publish("items", json!([]));
+        all_topics.publish("items", json!([]));
         for entry in entries {
             let (service, path) = split_entry(&entry);
-            Self::upsert(
-                &conn,
-                &self.icons,
-                &self.state,
-                &self.topics,
-                &service,
-                &path,
-            );
+            Self::upsert(&conn, &all_icons, &all_state, &all_topics, &service, &path);
         }
 
         let spawn = |name: &str, rule: String, handle: Box<dyn Fn(&zbus::Message) + Send>| {
@@ -484,9 +499,9 @@ tray = table.freeze({{
 
         let (c, icons, state, topics) = (
             conn.clone(),
-            self.icons.clone(),
-            self.state.clone(),
-            self.topics.clone(),
+            all_icons.clone(),
+            all_state.clone(),
+            all_topics.clone(),
         );
         spawn(
             "tray-watcher",
@@ -521,9 +536,9 @@ tray = table.freeze({{
 
         let (c, icons, state, topics) = (
             conn.clone(),
-            self.icons.clone(),
-            self.state.clone(),
-            self.topics.clone(),
+            all_icons.clone(),
+            all_state.clone(),
+            all_topics.clone(),
         );
         spawn(
             "tray-items",
@@ -554,9 +569,9 @@ tray = table.freeze({{
 
         let (c, icons, state, topics) = (
             conn.clone(),
-            self.icons.clone(),
-            self.state.clone(),
-            self.topics.clone(),
+            all_icons.clone(),
+            all_state.clone(),
+            all_topics.clone(),
         );
         spawn(
             "tray-menus",
