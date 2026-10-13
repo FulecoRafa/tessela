@@ -1,6 +1,6 @@
 //! Styled primitives (docs/adr/0015): what an app needs to draw its own
-//! design — a styled `Box`, `Label`, `Image`, a `Ring` meter, an anchored
-//! `Popup`, a one-line `Input` and the `Surface` an entry draws into.
+//! design — a styled `Box`, `Label`, `Image`, a `Ring` meter, a `Slider`, an
+//! anchored `Popup`, a one-line `Input` and the `Surface` an entry draws into.
 //!
 //! They are part of the default vocabulary but not of [`CORE`]: each one has a
 //! fallback in core components, so renderers that only draw the core (the
@@ -22,11 +22,13 @@ pub const IMAGE: &str = "Image";
 pub const RING: &str = "Ring";
 pub const POPUP: &str = "Popup";
 pub const INPUT: &str = "Input";
+/// A horizontal level the user sets by clicking, dragging or scrolling.
+pub const SLIDER: &str = "Slider";
 /// Root of an entry; only valid as the root of a tree.
 pub const SURFACE: &str = "Surface";
 
 /// Names of the styled primitives.
-pub const STYLED: &[&str] = &[BOX, LABEL, IMAGE, RING, POPUP, INPUT, SURFACE];
+pub const STYLED: &[&str] = &[BOX, LABEL, IMAGE, RING, SLIDER, POPUP, INPUT, SURFACE];
 
 const fn opt(name: &'static str, ty: PropType) -> PropSpec {
     PropSpec {
@@ -49,6 +51,9 @@ const SCROLL: PropType = PropType::Handler {
 };
 const TEXT_EVENT: PropType = PropType::Handler {
     payload: "{ value: string }",
+};
+const VALUE_EVENT: PropType = PropType::Handler {
+    payload: "{ value: number }",
 };
 const ALIGN: PropType = PropType::Enum(&["start", "center", "end", "stretch"]);
 const JUSTIFY: PropType = PropType::Enum(&["start", "center", "end", "between"]);
@@ -103,6 +108,19 @@ const RING_PROPS: &[PropSpec] = &[
     opt("thickness", PropType::Number),
     opt("color", PropType::Color),
     opt("track", PropType::Color),
+];
+
+// `value` is 0..=1. The renderer moves the level under the pointer while
+// dragging and reports each whole percent; the guest sets `value` back.
+const SLIDER_PROPS: &[PropSpec] = &[
+    req("value", PropType::Number),
+    opt("width", PropType::Length),
+    opt("thickness", PropType::Number),
+    opt("color", PropType::Color),
+    opt("track", PropType::Color),
+    // What one wheel notch adds or takes (0.05 by default).
+    opt("step", PropType::Number),
+    opt("on_change", VALUE_EVENT),
 ];
 
 const POPUP_PROPS: &[PropSpec] = &[
@@ -172,6 +190,9 @@ pub(crate) fn specs() -> Vec<ComponentSpec> {
             Node::new("Text").prop("text", "▣")
         }),
         spec(RING, Some("value"), RING_PROPS, true, |n| {
+            Node::new("Progress").prop("value", n.f32("value").unwrap_or(0.0))
+        }),
+        spec(SLIDER, Some("value"), SLIDER_PROPS, false, |n| {
             Node::new("Progress").prop("value", n.f32("value").unwrap_or(0.0))
         }),
         spec(POPUP, None, POPUP_PROPS, true, |n| {
@@ -329,6 +350,7 @@ mod tests {
                  "place": {"top": 2}, "width": "50%", "on_right_click": 3, "children": [
                     {"type": "Label", "text": "hi", "color": "#fff", "weight": "bold"},
                     {"type": "Ring", "value": 0.5, "size": 32, "children": ["50"]},
+                    {"type": "Slider", "value": 0.3, "width": "50%", "on_change": 4},
                 ]},
             ]}))
             .unwrap();
@@ -336,10 +358,13 @@ mod tests {
         assert_eq!(lowered.kind, "Row");
         assert_eq!(lowered.children[0].kind, "Column");
         assert_eq!(lowered.children[0].children[1].kind, "Progress");
+        assert_eq!(lowered.children[0].children[2].kind, "Progress");
 
         let bad = |t| v.parse(t).unwrap_err().to_string();
         assert!(bad(json!({"type": "Box", "bg": "red"})).contains("color"));
         assert!(bad(json!({"type": "Box", "direction": "diagonal"})).contains("one of"));
+        assert!(bad(json!({"type": "Slider"})).contains("value"));
+        assert!(bad(json!({"type": "Slider", "value": 1, "width": "wide"})).contains("width"));
         assert!(
             bad(json!({"type": "Box", "children": [{"type": "Surface", "anchor": "top"}]}))
                 .contains("root")

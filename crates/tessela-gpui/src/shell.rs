@@ -23,12 +23,12 @@ use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
-    AnyElement, App, AppContext, AsyncApp, Bounds, Context, Div, ElementId, Entity, FocusHandle,
-    FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement,
-    PathBuilder, Pixels, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Size, Stateful,
-    StatefulInteractiveElement, Styled, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, canvas, div, img, point, prelude::*, px, relative,
-    rgb,
+    AnyElement, App, AppContext, AsyncApp, Bounds, Context, DispatchPhase, Div, ElementId, Entity,
+    FocusHandle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, Rgba, ScrollDelta,
+    ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement, Styled, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div,
+    img, point, prelude::*, px, relative, rgb,
 };
 use serde_json::{Value, json};
 use tessela_host::{Frame, Renderer, Slot, Surface, Trees, UiEvent};
@@ -232,6 +232,15 @@ impl Placement {
     }
 }
 
+/// A `Slider` being dragged: its level follows the pointer until release.
+#[derive(Debug, Clone, Copy)]
+struct Drag {
+    key: (usize, NodeId),
+    value: f32,
+    /// Last whole percent reported to the guest.
+    sent: f32,
+}
+
 /// Text being edited in an `Input`; the renderer owns it while focused.
 struct InputState {
     text: String,
@@ -252,6 +261,7 @@ pub(crate) struct Model {
     /// Popup anchors: bounds in their window, written while painting.
     anchors: Rc<RefCell<HashMap<(usize, NodeId), Bounds<Pixels>>>>,
     inputs: HashMap<(usize, NodeId), InputState>,
+    drag: Rc<RefCell<Option<Drag>>>,
     /// Input region last set on each overlay window, to set it only on change.
     regions: Rc<RefCell<HashMap<WindowKey, Vec<Bounds<Pixels>>>>>,
     pub(crate) inspector: Option<Inspector>,
@@ -444,6 +454,11 @@ fn scroll_delta(e: &ScrollWheelEvent) -> i32 {
     (y > 0.0) as i32 - (y < 0.0) as i32
 }
 
+/// A 0..=1 level as a whole percent, exact in JSON (0.79, not 0.7900000214).
+fn percent(v: f32) -> f64 {
+    (v as f64 * 100.0).round() / 100.0
+}
+
 fn send(slot: &Slot, h: &Handler, payload: Value) {
     slot.send(UiEvent::new(h.clone(), payload));
 }
@@ -471,6 +486,7 @@ impl Draw<'_> {
             styled::LABEL => self.label(r),
             styled::IMAGE => self.image(r),
             styled::RING => self.ring(id, r, window, cx),
+            styled::SLIDER => self.slider(id, r),
             styled::INPUT => self.input(id, r, window, cx),
             // Drawn in its own window; here it only marks the anchor.
             styled::POPUP => self.anchor_probe(id),
@@ -766,6 +782,160 @@ impl Draw<'_> {
             .justify_center()
             .child(paint)
             .children(self.children(r, window, cx))
+            .into_any_element()
+    }
+
+    fn slider(&self, id: NodeId, r: &Retained) -> AnyElement {
+        let p = P(r);
+        let key = (self.slot, id);
+        let thickness = p.f32("thickness").unwrap_or(8.0).max(1.0);
+        let step = p.f32("step").unwrap_or(0.05);
+        let value = p.f32("value").unwrap_or(0.0).clamp(0.0, 1.0);
+        let drag = self.m.drag.clone();
+        // While dragged, the level is where the pointer is, not where the
+        // guest last said: its answer arrives a round trip later.
+        let shown = match *drag.borrow() {
+            Some(d) if d.key == key => d.value,
+            _ => value,
+        };
+        let color = self
+            .m
+            .color(&p.str("color").unwrap_or_else(|| "$yellow".into()));
+        let track = self
+            .m
+            .color(&p.str("track").unwrap_or_else(|| "$raised".into()));
+        let handler = p.handler("on_change");
+        // Taller than the bar itself when it takes input, like the
+        // reference's 6 px margins.
+        let hit = if handler.is_some() {
+            thickness + 12.0
+        } else {
+            thickness
+        };
+        let mut el = div()
+            .id(eid(self.slot, id))
+            .relative()
+            .h(px(hit))
+            .flex()
+            .items_center()
+            .flex_shrink_0();
+        el = match r.props.get("width").and_then(Length::parse) {
+            Some(Length::Px(w)) => el.w(px(w)),
+            Some(Length::Percent(f)) => el.w(relative(f / 100.0)),
+            None => el.w_full(),
+        };
+        let bar = div()
+            .w_full()
+            .h(px(thickness))
+            .rounded(px(thickness / 2.0 + 1.0))
+            .bg(track)
+            .overflow_hidden()
+            .child(
+                div()
+                    .h_full()
+                    .w(relative(shown))
+                    .rounded(px(thickness / 2.0 + 1.0))
+                    .bg(color),
+            );
+        let Some(h) = handler else {
+            return el.child(bar).into_any_element();
+        };
+        let ui = self.ui().clone();
+        let at = |bounds: Bounds<Pixels>, x: Pixels| {
+            let w = f32::from(bounds.size.width).max(1.0);
+            (f32::from(x - bounds.origin.x) / w).clamp(0.0, 1.0)
+        };
+        // Reports whole percents only: a drag across the bar is ~100 events,
+        // not one per pointer motion.
+        let report = {
+            let (ui, h) = (ui.clone(), h.clone());
+            move |d: &mut Drag| {
+                let v = (d.value * 100.0).round() / 100.0;
+                if v != d.sent {
+                    d.sent = v;
+                    send(&ui, &h, json!({ "value": percent(v) }));
+                }
+            }
+        };
+        let probe = {
+            let (drag, report) = (drag.clone(), report.clone());
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    if !drag.borrow().is_some_and(|d| d.key == key) {
+                        return;
+                    }
+                    let (d1, report) = (drag.clone(), report.clone());
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, _| {
+                        if phase != DispatchPhase::Bubble || !e.dragging() {
+                            return;
+                        }
+                        if let Some(d) = d1.borrow_mut().as_mut().filter(|d| d.key == key) {
+                            d.value = at(bounds, e.position.x);
+                            report(d);
+                            window.refresh();
+                        }
+                    });
+                    let d2 = drag.clone();
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _| {
+                        if phase == DispatchPhase::Bubble
+                            && d2.borrow().is_some_and(|d| d.key == key)
+                        {
+                            *d2.borrow_mut() = None;
+                            window.refresh();
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        };
+        // The press needs the bar's bounds; the probe has them only while
+        // painting, so the press handler measures through its own canvas.
+        let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
+        let measure = {
+            let bounds = bounds.clone();
+            canvas(
+                move |b, _, _| {
+                    *bounds.borrow_mut() = Some(b);
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        };
+        let (press_drag, press_bounds) = (drag.clone(), bounds.clone());
+        let (wheel_ui, wheel_h) = (ui.clone(), h.clone());
+        el.cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |e, window, cx| {
+                cx.stop_propagation();
+                let Some(b) = *press_bounds.borrow() else {
+                    return;
+                };
+                let mut d = Drag {
+                    key,
+                    value: at(b, e.position.x),
+                    sent: -1.0,
+                };
+                report(&mut d);
+                *press_drag.borrow_mut() = Some(d);
+                window.refresh();
+            })
+            .on_scroll_wheel(move |e, _, cx| {
+                let d = scroll_delta(e);
+                if d != 0 {
+                    cx.stop_propagation();
+                    let v = (value + step * d as f32).clamp(0.0, 1.0);
+                    send(&wheel_ui, &wheel_h, json!({ "value": percent(v) }));
+                }
+            })
+            .child(bar)
+            .child(measure)
+            .child(probe)
             .into_any_element()
     }
 
@@ -1379,6 +1549,7 @@ impl Renderer for Shell {
                     dev: dev_placement,
                     anchors: Rc::default(),
                     inputs: HashMap::new(),
+                    drag: Rc::default(),
                     regions: Rc::default(),
                     inspector,
                     warned: RefCell::default(),

@@ -22,7 +22,7 @@ Linux (`apps/marathon`).
 crates/
   tessela          fachada: re-exporta tudo atrás de features
   tessela-core     grafo reativo, Instance, traits Engine e Module (sem I/O)
-  tessela-view     vocabulário (núcleo + Box, Label, Image, Ring, Popup, Input, Surface), schemas, patches
+  tessela-view     vocabulário (núcleo + Box, Label, Image, Ring, Slider, Popup, Input, Surface), schemas, patches
   tessela-host     manifestos, pool de workers, hot reload, trait Renderer, renderer Headless
   tessela-luau     engine Luau            (feature luau)
   tessela-quickjs  engine JS/TSX          (feature quickjs)
