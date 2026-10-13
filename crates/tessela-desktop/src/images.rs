@@ -3,8 +3,9 @@
 //! - `asset:<path>` — a file of the project (inside its root);
 //! - `icon:<name>` — an icon of the desktop's theme;
 //! - `file:<absolute path>` — what modules hand out (app icons, tray icons,
-//!   album covers): only under the icon/pixmap directories, the image cache
-//!   and the project.
+//!   album covers): only under the icon/pixmap directories, the image cache,
+//!   the user's cache (`$XDG_CACHE_HOME`, where plugins save covers), the
+//!   temporary directory and the project.
 //!
 //! `file:` paths are checked lexically (absolute, no `..`, under an allowed
 //! root, an image extension) rather than canonically: on NixOS every icon is a
@@ -26,6 +27,14 @@ pub fn cache_dir() -> PathBuf {
     PathBuf::from(runtime).join("tessela").join("images")
 }
 
+/// `$XDG_CACHE_HOME`, else `~/.cache`.
+fn user_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+}
+
 fn clean(p: &Path) -> bool {
     p.is_absolute() && !p.components().any(|c| matches!(c, Component::ParentDir))
 }
@@ -45,10 +54,9 @@ impl Images {
         if let Some(p) = &project {
             roots.push(p.clone());
         }
-        // MPRIS covers usually come from the browser's or player's cache.
-        if let Ok(home) = std::env::var("HOME") {
-            roots.push(PathBuf::from(home).join(".cache"));
-        }
+        // MPRIS covers usually come from the browser's or player's cache, or
+        // a plugin's (a downloaded or extension-less cover saved as an image).
+        roots.extend(user_cache_dir());
         Self {
             project: project.map(|p| p.canonicalize().unwrap_or(p)),
             icons,
@@ -110,5 +118,14 @@ mod tests {
         assert!(!images.file_allowed(Path::new("/etc/shadow")));
         assert!(!images.file_allowed(&cache.join("notes.txt")));
         assert!(!images.file_allowed(Path::new("relative.png")));
+        if let Some(user) = user_cache_dir() {
+            let art = user.join("tessela/adwaita-shell/art");
+            assert!(images.file_allowed(&art.join("0a1b.jpg")));
+            assert!(!images.file_allowed(&art.join("../../../../.ssh/id.png")));
+            assert!(
+                !images.file_allowed(&art.join("cover")),
+                "needs an image extension"
+            );
+        }
     }
 }
