@@ -7,6 +7,7 @@
 //! sway, river, Hyprland, KWin, Wayfire, ...).
 
 mod inspect;
+mod motion;
 mod shell;
 mod svg;
 

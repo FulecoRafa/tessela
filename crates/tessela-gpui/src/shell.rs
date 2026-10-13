@@ -38,6 +38,7 @@ use tessela_view::text::{icon, short_error};
 use tessela_view::{CORE, ERROR, Handler, NodeId, Tone, ViewTree};
 
 use crate::inspect::{InspectCommand, InspectControl, Inspector, WindowInfo};
+use crate::motion::{self, Motion, Params};
 use crate::svg;
 
 // ---------------------------------------------------------------- options
@@ -263,6 +264,8 @@ pub(crate) struct Model {
     anchors: Rc<RefCell<HashMap<(usize, NodeId), Bounds<Pixels>>>>,
     inputs: HashMap<(usize, NodeId), InputState>,
     drag: Rc<RefCell<Option<Drag>>>,
+    /// Time-driven `Slider`s (docs/adr/0021), by node.
+    motion: Rc<RefCell<HashMap<(usize, NodeId), Motion>>>,
     /// Input region last set on each overlay window, to set it only on change.
     regions: Rc<RefCell<HashMap<WindowKey, Vec<Bounds<Pixels>>>>>,
     pub(crate) inspector: Option<Inspector>,
@@ -533,7 +536,7 @@ impl Draw<'_> {
             styled::LABEL => self.label(r),
             styled::IMAGE => self.image(r, window),
             styled::RING => self.ring(id, r, window, cx),
-            styled::SLIDER => self.slider(id, r),
+            styled::SLIDER => self.slider(id, r, window, cx),
             styled::INPUT => self.input(id, r, window, cx),
             // Drawn in its own window; here it only marks the anchor.
             styled::POPUP => self.anchor_probe(id),
@@ -867,18 +870,55 @@ impl Draw<'_> {
             .into_any_element()
     }
 
-    fn slider(&self, id: NodeId, r: &Retained) -> AnyElement {
+    fn slider(&self, id: NodeId, r: &Retained, window: &mut Window, cx: &mut App) -> AnyElement {
         let p = P(r);
         let key = (self.slot, id);
-        let thickness = p.f32("thickness").unwrap_or(8.0).max(1.0);
+        // A wave slider draws a line (Android's media progress): the filled
+        // part waves, the rest is a flat track after a gap, a pill marks it.
+        let wavy = r.props.contains_key("wave");
+        let thickness = p
+            .f32("thickness")
+            .unwrap_or(if wavy { 3.0 } else { 8.0 })
+            .max(1.0);
         let step = p.f32("step").unwrap_or(0.05);
         let value = p.f32("value").unwrap_or(0.0).clamp(0.0, 1.0);
+        let params = Params {
+            value,
+            rate: p.f32("rate").unwrap_or(0.0),
+            at: r.props.get("at").and_then(Value::as_f64),
+            wave: p.f32("wave").unwrap_or(0.0).clamp(0.0, 64.0),
+            speed: p.f32("speed").unwrap_or(7.0),
+        };
+        // Time-driven sliders advance here, once per frame of their window
+        // and only while it is open (docs/adr/0021).
+        let sample = (wavy || params.rate != 0.0).then(|| {
+            let now = styled::now_ms();
+            let mut motions = self.m.motion.borrow_mut();
+            let mo = motions
+                .entry(key)
+                .or_insert_with(|| Motion::new(&params, now));
+            let s = mo.step(&params, now);
+            if s.animating {
+                window.request_animation_frame();
+            } else if let Some(delay) = s.tick
+                && mo.claim_tick(now, delay)
+            {
+                let view = window.current_view();
+                cx.spawn(async move |cx| {
+                    cx.background_executor().timer(delay).await;
+                    cx.update(|cx| cx.notify(view));
+                })
+                .detach();
+            }
+            s
+        });
+        let level = sample.map_or(value, |s| s.level);
         let drag = self.m.drag.clone();
         // While dragged, the level is where the pointer is, not where the
         // guest last said: its answer arrives a round trip later.
         let shown = match *drag.borrow() {
             Some(d) if d.key == key => d.value,
-            _ => value,
+            _ => level,
         };
         let color = self
             .m
@@ -886,10 +926,15 @@ impl Draw<'_> {
         let track = self
             .m
             .color(&p.str("track").unwrap_or_else(|| "$raised".into()));
-        let handler = p.handler("on_change");
+        let change = p.handler("on_change");
+        let commit = p.handler("on_commit");
+        let interactive = change.is_some() || commit.is_some();
         // Taller than the bar itself when it takes input, like the
-        // reference's 6 px margins.
-        let hit = if handler.is_some() {
+        // reference's 6 px margins. A wave needs room for its swing and the
+        // pill (18 px).
+        let hit = if wavy {
+            (thickness + 2.0 * params.wave + 4.0).max(18.0) + 8.0
+        } else if interactive {
             thickness + 12.0
         } else {
             thickness
@@ -906,22 +951,51 @@ impl Draw<'_> {
             Some(Length::Percent(f)) => el.w(relative(f / 100.0)),
             None => el.w_full(),
         };
-        let bar = div()
-            .w_full()
-            .h(px(thickness))
-            .rounded(px(thickness / 2.0 + 1.0))
-            .bg(track)
-            .overflow_hidden()
-            .child(
-                div()
-                    .h_full()
-                    .w(relative(shown))
-                    .rounded(px(thickness / 2.0 + 1.0))
-                    .bg(color),
-            );
-        let Some(h) = handler else {
-            return el.child(bar).into_any_element();
+        let bar = if wavy {
+            let (amplitude, phase) = sample.map_or((0.0, 0.0), |s| (s.amplitude, s.phase));
+            let wavelength = p.f32("wavelength").unwrap_or(26.0).max(4.0);
+            canvas(
+                |_, _, _| {},
+                move |b, _, window, _| {
+                    paint_wave(
+                        window,
+                        b,
+                        Wave {
+                            level: shown,
+                            amplitude,
+                            phase,
+                            wavelength,
+                            thickness,
+                            color,
+                            track,
+                        },
+                    )
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .into_any_element()
+        } else {
+            div()
+                .w_full()
+                .h(px(thickness))
+                .rounded(px(thickness / 2.0 + 1.0))
+                .bg(track)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(shown))
+                        .rounded(px(thickness / 2.0 + 1.0))
+                        .bg(color),
+                )
+                .into_any_element()
         };
+        if !interactive {
+            return el.child(bar).into_any_element();
+        }
         let ui = self.ui().clone();
         let at = |bounds: Bounds<Pixels>, x: Pixels| {
             let w = f32::from(bounds.size.width).max(1.0);
@@ -930,13 +1004,27 @@ impl Draw<'_> {
         // Reports whole percents only: a drag across the bar is ~100 events,
         // not one per pointer motion.
         let report = {
-            let (ui, h) = (ui.clone(), h.clone());
+            let (ui, h) = (ui.clone(), change.clone());
             move |d: &mut Drag| {
+                let Some(h) = &h else { return };
                 let v = (d.value * 100.0).round() / 100.0;
                 if v != d.sent {
                     d.sent = v;
-                    send(&ui, &h, json!({ "value": percent(v) }));
+                    send(&ui, h, json!({ "value": percent(v) }));
                 }
+            }
+        };
+        // On release: one `on_commit` with the finer level (a seek), which
+        // the slider keeps showing until the guest reports a new value.
+        let release = {
+            let (ui, h, motions) = (ui.clone(), commit.clone(), self.m.motion.clone());
+            move |d: &Drag| {
+                let Some(h) = &h else { return };
+                let v = (d.value as f64 * 1000.0).round() / 1000.0;
+                if let Some(mo) = motions.borrow_mut().get_mut(&key) {
+                    mo.commit(d.value, styled::now_ms());
+                }
+                send(&ui, h, json!({ "value": v }));
             }
         };
         let probe = {
@@ -958,12 +1046,14 @@ impl Draw<'_> {
                             window.refresh();
                         }
                     });
-                    let d2 = drag.clone();
+                    let (d2, release) = (drag.clone(), release.clone());
                     window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _| {
-                        if phase == DispatchPhase::Bubble
-                            && d2.borrow().is_some_and(|d| d.key == key)
-                        {
-                            *d2.borrow_mut() = None;
+                        if phase != DispatchPhase::Bubble {
+                            return;
+                        }
+                        let done = d2.borrow_mut().take_if(|d| d.key == key);
+                        if let Some(d) = done {
+                            release(&d);
                             window.refresh();
                         }
                     });
@@ -991,8 +1081,8 @@ impl Draw<'_> {
             .size_full()
         };
         let (press_drag, press_bounds) = (drag.clone(), bounds.clone());
-        let (wheel_ui, wheel_h) = (ui.clone(), h.clone());
-        el.cursor_pointer()
+        el = el
+            .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |e, window, cx| {
                 cx.stop_propagation();
                 let Some(b) = *press_bounds.borrow() else {
@@ -1006,19 +1096,20 @@ impl Draw<'_> {
                 report(&mut d);
                 *press_drag.borrow_mut() = Some(d);
                 window.refresh();
-            })
-            .on_scroll_wheel(move |e, _, cx| {
+            });
+        // The wheel steps a level the guest owns (volume); seeking stays
+        // with clicks and drags, and the wheel scrolls what is around.
+        if let Some(h) = change {
+            el = el.on_scroll_wheel(move |e, _, cx| {
                 let d = scroll_delta(e);
                 if d != 0 {
                     cx.stop_propagation();
                     let v = (value + step * d as f32).clamp(0.0, 1.0);
-                    send(&wheel_ui, &wheel_h, json!({ "value": percent(v) }));
+                    send(&ui, &h, json!({ "value": percent(v) }));
                 }
-            })
-            .child(bar)
-            .child(measure)
-            .child(probe)
-            .into_any_element()
+            });
+        }
+        el.child(bar).child(measure).child(probe).into_any_element()
     }
 
     fn input(&self, id: NodeId, r: &Retained, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -1489,6 +1580,62 @@ fn inspect_layer(m: &Model, model: &Entity<Model>, slot: usize, measure: &Measur
         .into_any_element()
 }
 
+/// What a wave `Slider` draws this frame.
+#[derive(Clone, Copy)]
+struct Wave {
+    level: f32,
+    amplitude: f32,
+    phase: f32,
+    wavelength: f32,
+    thickness: f32,
+    color: Hsla,
+    track: Hsla,
+}
+
+/// The played part as a sine line, a gap, the rest as a flat track, and a
+/// pill at the level (the reference's `Canvas`, drawn by the renderer).
+fn paint_wave(window: &mut Window, b: Bounds<Pixels>, w: Wave) {
+    let width = f32::from(b.size.width);
+    let (x0, mid) = (b.origin.x, b.center().y);
+    let t = w.thickness;
+    let cut = (width * w.level).clamp(0.0, width);
+    let pill = |x: f32, y: f32, pw: f32, ph: f32, c: Hsla| {
+        gpui::fill(
+            Bounds::new(point(x0 + px(x), mid + px(y)), gpui::size(px(pw), px(ph))),
+            c,
+        )
+        .corner_radii(px(pw.min(ph) / 2.0))
+    };
+    if cut + 8.0 < width {
+        window.paint_quad(pill(cut + 8.0, -t / 2.0, width - cut - 8.0, t, w.track));
+    }
+    if cut > 2.0 {
+        let mut path = PathBuilder::stroke(px(t));
+        let mut x = 0.0f32;
+        loop {
+            let y = motion::wave_y(x, cut, w.amplitude, w.wavelength, w.phase);
+            let pt = point(x0 + px(x), mid + px(y));
+            if x == 0.0 {
+                path.move_to(pt);
+            } else {
+                path.line_to(pt);
+            }
+            if x >= cut {
+                break;
+            }
+            x = (x + 2.0).min(cut);
+        }
+        if let Ok(path) = path.build() {
+            window.paint_path(path, w.color);
+        }
+        // Round start cap; the wave meets the line there.
+        window.paint_quad(pill(-t / 2.0, -t / 2.0, t, t, w.color));
+    }
+    let (pw, ph) = (5.0, 18.0);
+    let x = (cut - pw / 2.0).clamp(0.0, (width - pw).max(0.0));
+    window.paint_quad(pill(x, -ph / 2.0, pw, ph, w.color));
+}
+
 // ---------------------------------------------------------------- windows
 
 pub(crate) struct SurfaceView {
@@ -1870,6 +2017,7 @@ impl Renderer for Shell {
                     anchors: Rc::default(),
                     inputs: HashMap::new(),
                     drag: Rc::default(),
+                    motion: Rc::default(),
                     regions: Rc::default(),
                     inspector,
                     inspect: Inspect::default(),
@@ -1891,6 +2039,10 @@ impl Renderer for Shell {
                             for f in &batch {
                                 m.trees.apply(f);
                             }
+                            let trees = &m.trees;
+                            m.motion.borrow_mut().retain(|(slot, node), _| {
+                                trees.tree(*slot).is_some_and(|t| t.get(*node).is_some())
+                            });
                             cx.notify();
                         });
                         windows.sync(&m, cx);

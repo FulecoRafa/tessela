@@ -121,6 +121,11 @@ const RING_PROPS: &[PropSpec] = &[
 
 // `value` is 0..=1. The renderer moves the level under the pointer while
 // dragging and reports each whole percent; the guest sets `value` back.
+//
+// Time-driven parts run in the renderer, at frame rate, with no guest code
+// (docs/adr/0021): `rate` advances `value` from the instant `at` (a playing
+// track between two position reports), `wave` turns the filled part into a
+// moving sine line.
 const SLIDER_PROPS: &[PropSpec] = &[
     req("value", PropType::Number),
     opt("width", PropType::Length),
@@ -129,7 +134,20 @@ const SLIDER_PROPS: &[PropSpec] = &[
     opt("track", PropType::Color),
     // What one wheel notch adds or takes (0.05 by default).
     opt("step", PropType::Number),
+    // `value` units per second the level advances by itself.
+    opt("rate", PropType::Number),
+    // When `value` was true, in ms since the Unix epoch (default: when the
+    // renderer received it).
+    opt("at", PropType::Number),
+    // Amplitude in px of the wave drawn over the filled part; 0 is a flat
+    // line. Changes are eased; the wave moves while it is not flat.
+    opt("wave", PropType::Number),
+    // Px per period (26) and radians per second (7).
+    opt("wavelength", PropType::Number),
+    opt("speed", PropType::Number),
     opt("on_change", VALUE_EVENT),
+    // Once, when the pointer is released after a click or drag (seeking).
+    opt("on_commit", VALUE_EVENT),
 ];
 
 const POPUP_PROPS: &[PropSpec] = &[
@@ -204,7 +222,13 @@ pub(crate) fn specs() -> Vec<ComponentSpec> {
             Node::new("Progress").prop("value", n.f32("value").unwrap_or(0.0))
         }),
         spec(SLIDER, Some("value"), SLIDER_PROPS, false, |n| {
-            Node::new("Progress").prop("value", n.f32("value").unwrap_or(0.0))
+            let value = advanced(
+                n.f32("value").unwrap_or(0.0),
+                n.f32("rate").unwrap_or(0.0),
+                n.props.get("at").and_then(Value::as_f64),
+                now_ms(),
+            );
+            Node::new("Progress").prop("value", value)
         }),
         spec(POPUP, None, POPUP_PROPS, true, |n| {
             if n.bool("open") {
@@ -227,6 +251,20 @@ pub(crate) fn specs() -> Vec<ComponentSpec> {
 }
 
 // ---------------------------------------------------------------- values
+
+/// Milliseconds since the Unix epoch, the clock of `Slider.at`.
+pub fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+}
+
+/// Where a `Slider` level is at `now` (ms): `value` advanced by `rate` per
+/// second since `at`, within 0..=1. Without `at`, `value` as is.
+pub fn advanced(value: f32, rate: f32, at: Option<f64>, now: f64) -> f32 {
+    let elapsed = at.map_or(0.0, |at| ((now - at) / 1000.0).max(0.0));
+    (value + rate * elapsed as f32).clamp(0.0, 1.0)
+}
 
 /// `#rgb`, `#rrggbb`, `#rrggbbaa` or a theme token `$name`.
 pub fn is_color(s: &str) -> bool {
@@ -354,6 +392,26 @@ mod tests {
             Some([Some(-1.0), None, None, Some(8.0)])
         );
         assert_eq!(place(&json!({"z": 1})), None);
+    }
+
+    #[test]
+    fn a_slider_advances_with_time() {
+        assert!((advanced(0.5, 0.1, Some(1000.0), 3000.0) - 0.7).abs() < 1e-6);
+        assert_eq!(advanced(0.5, 0.1, None, 3000.0), 0.5);
+        assert_eq!(advanced(0.9, 0.1, Some(0.0), 5000.0), 1.0);
+        assert_eq!(
+            advanced(0.5, 0.1, Some(9000.0), 3000.0),
+            0.5,
+            "a clock ahead never rewinds"
+        );
+        let v = Vocabulary::default();
+        let at = now_ms() - 2000.0;
+        let tree = v
+            .parse(json!({"type": "Slider", "value": 0.25, "rate": 0.125, "at": at, "wave": 3.5, "on_commit": 1}))
+            .unwrap();
+        let lowered = v.lower(tree, &|k| crate::CORE.contains(&k));
+        let shown = lowered.props["value"].as_f64().unwrap();
+        assert!((0.49..0.52).contains(&shown), "{shown}");
     }
 
     #[test]
