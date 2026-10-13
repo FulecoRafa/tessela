@@ -1046,6 +1046,16 @@ fn draw_window(
                 if pl.right {
                     frame = frame.right(px(mr));
                 }
+                // Not anchored on either side of an axis: centered on it, like
+                // layer-shell centers a surface.
+                let viewport = window.viewport_size();
+                if !pl.left && !pl.right && pl.width > 0.0 {
+                    frame = frame.left(px(((f32::from(viewport.width) - pl.width) / 2.0).max(0.0)));
+                }
+                if !pl.top && !pl.bottom && pl.height > 0.0 {
+                    frame =
+                        frame.top(px(((f32::from(viewport.height) - pl.height) / 2.0).max(0.0)));
+                }
                 if !(pl.left && pl.right) && pl.width > 0.0 {
                     frame = frame.w(px(pl.width));
                 }
