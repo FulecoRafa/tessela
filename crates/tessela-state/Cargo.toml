@@ -1,0 +1,13 @@
+[package]
+name = "tessela-state"
+description = "Module: values shared by every extension of an app, optionally saved to disk"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-core.workspace = true
+serde_json.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true

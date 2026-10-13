@@ -12,6 +12,7 @@ default-members = [
     "crates/tessela-host",
     "crates/tessela-unix",
     "crates/tessela-timer",
+    "crates/tessela-state",
     "crates/tessela-tui",
     "apps/marathon",
 ]
@@ -35,6 +36,7 @@ tessela-unix = { path = "crates/tessela-unix" }
 tessela-timer = { path = "crates/tessela-timer" }
 tessela-tui = { path = "crates/tessela-tui" }
 tessela-gpui = { path = "crates/tessela-gpui" }
+tessela-state = { path = "crates/tessela-state" }
 # external
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -6785,6 +6785,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessela-state"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "serde_json",
+ "tessela-core",
+]
+
+[[package]]
 name = "tessela-timer"
 version = "0.1.0"
 dependencies = [
