@@ -6,6 +6,10 @@
 //! themselves. The [`connector`] multiplexes identical subscriptions across
 //! extensions and reconnects when a service restarts.
 //!
+//! `subscribe(path)` returns one signal per (service, path) for the whole
+//! extension, so data accessors may call it lazily, even inside bindings;
+//! the subscription lasts until the extension unloads.
+//!
 //! Guest API (Luau shown; TSX is the same with `.` instead of `:`):
 //!
 //! ```lua
@@ -30,11 +34,16 @@ pub use connector::{Connector, Delivery, DeliverySink, Registry, valid_service_n
 
 const LUAU: &str = r#"
 local rt = __rt
+local subscriptions = {}
 function use(name)
 	rt.invoke("service", "open", { service = name })
 	local svc = {}
 	function svc:subscribe(path)
-		return rt.wrap(rt.invoke("service", "subscribe", { service = name, path = path }).sig)
+		local key = name .. "\0" .. path
+		if not subscriptions[key] then
+			subscriptions[key] = rt.wrap(rt.invoke("service", "subscribe", { service = name, path = path }).sig)
+		end
+		return subscriptions[key]
 	end
 	function svc:call(method, args, cb)
 		rt.invoke("service", "call", { service = name, method = method, args = args, cb = cb })
@@ -53,10 +62,20 @@ const JS: &str = r#"
 "use strict";
 (() => {
   const rt = globalThis.__rt;
+  // One signal per (service, path) for the whole extension.
+  const subscriptions = new Map();
   rt.define("use", (name) => {
     rt.invoke("service", "open", { service: name });
     return Object.freeze({
-      subscribe: (path) => rt.wrap(rt.invoke("service", "subscribe", { service: name, path }).sig),
+      subscribe: (path) => {
+        const key = name + "\0" + path;
+        let s = subscriptions.get(key);
+        if (!s) {
+          s = rt.wrap(rt.invoke("service", "subscribe", { service: name, path }).sig);
+          subscriptions.set(key, s);
+        }
+        return s;
+      },
       call: (method, args, cb) => {
         rt.invoke("service", "call", { service: name, method, args: args ?? null, cb: cb ?? null });
       },
@@ -146,7 +165,10 @@ impl Module for UnixServices {
             "subscribe" => {
                 let path = args["path"].as_str().ok_or("missing path")?.to_string();
                 let key = self.next_key.fetch_add(1, Ordering::Relaxed);
-                let sig = cx.signal(Value::Null, Some(key))?;
+                // Owned by the extension, not the calling code: the prelude caches
+                // it per (service, path), so subscribing from inside a binding
+                // (lazy data accessors) reads the same signal every time.
+                let sig = cx.root_signal(Value::Null, Some(key))?;
                 let sink = cx.sink();
                 self.connector.subscribe(
                     &service,
