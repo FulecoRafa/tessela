@@ -20,3 +20,4 @@ Escreva um ADR novo que substitui o antigo; não reescreva o histórico.
 | [0013](0013-pool-de-workers.md) | Pool de workers em vez de uma thread por extensão | aceita |
 | [0014](0014-timers-persist-quotas.md) | Timers, `persist` e quotas por extensão | aceita |
 | [0015](0015-projetos.md) | Projetos: entradas, pacotes `@nome`, superfícies, primitivos estilizados, temas | aceita |
+| [0016](0016-dados-da-extensao.md) | Sinais de módulo pertencem à extensão; estado compartilhado e módulos de desktop | aceita |
