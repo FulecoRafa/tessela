@@ -6752,6 +6752,7 @@ dependencies = [
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",
  "log",
+ "serde",
  "serde_json",
  "tessela-host",
  "tessela-view",

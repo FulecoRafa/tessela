@@ -6,6 +6,12 @@
 //! ([`LayerBar`]); it needs a compositor with `zwlr_layer_shell_v1` (niri,
 //! sway, river, Hyprland, KWin, Wayfire, ...).
 
+mod inspect;
+mod shell;
+
+pub use inspect::{Inspector, RenderProbe, WindowInfo};
+pub use shell::{ImageResolver, Shell, Theme};
+
 use std::time::Duration;
 
 use futures::StreamExt;
