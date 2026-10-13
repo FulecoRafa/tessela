@@ -1,0 +1,17 @@
+[package]
+name = "tessela-desktop"
+description = "Modules for Linux desktops: context, Hyprland, system readings, apps and icons, StatusNotifierItem tray"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tessela-core.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+png = "0.18"
+libc = "0.2"
