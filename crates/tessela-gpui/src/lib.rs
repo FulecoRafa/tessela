@@ -392,6 +392,10 @@ impl Renderer for LayerBar {
             })
             .expect("spawn frame bridge");
         let mut rx = Some(rx);
+        // `TESSELA_DEV_PLACEMENT=1`: draw at the bottom edge without reserving
+        // space, so it can run next to the desktop's own bar without moving
+        // windows or that bar.
+        let dev = std::env::var_os("TESSELA_DEV_PLACEMENT").is_some();
         let LayerBar {
             app_id,
             namespace,
@@ -411,8 +415,10 @@ impl Renderer for LayerBar {
                 kind: WindowKind::LayerShell(LayerShellOptions {
                     namespace: namespace.clone(),
                     layer: Layer::Top,
-                    anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
-                    exclusive_zone: Some(px(height)),
+                    anchor: if dev { Anchor::BOTTOM } else { Anchor::TOP }
+                        | Anchor::LEFT
+                        | Anchor::RIGHT,
+                    exclusive_zone: (!dev).then_some(px(height)),
                     keyboard_interactivity: KeyboardInteractivity::None,
                     ..Default::default()
                 }),
