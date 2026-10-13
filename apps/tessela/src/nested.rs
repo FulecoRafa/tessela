@@ -18,10 +18,18 @@ pub struct Nested {
     pub display: String,
 }
 
-fn sockets(runtime: &Path) -> Vec<String> {
+/// Wayland sockets created at or after `since`. By time, not by name: a
+/// compositor killed earlier leaves its socket behind, and the next one
+/// reuses the name.
+fn sockets_since(runtime: &Path, since: std::time::SystemTime) -> Vec<String> {
     std::fs::read_dir(runtime)
         .map(|d| {
             d.flatten()
+                .filter(|e| {
+                    e.metadata()
+                        .and_then(|m| m.modified())
+                        .is_ok_and(|t| t >= since)
+                })
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .filter(|n| n.starts_with("wayland-") && !n.ends_with(".lock"))
                 .collect()
@@ -48,7 +56,8 @@ pub fn start(dir: &Path, spec: &str) -> anyhow::Result<Nested> {
     let runtime = std::path::PathBuf::from(
         std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?,
     );
-    let before = sockets(&runtime);
+    // A little slack: file times may be coarser than the clock.
+    let since = std::time::SystemTime::now() - Duration::from_millis(50);
     let mut cmd = Command::new("sway");
     cmd.arg("-c")
         .arg(&config)
@@ -74,7 +83,7 @@ pub fn start(dir: &Path, spec: &str) -> anyhow::Result<Nested> {
         .context("starting sway (is it installed? it is in the dev shell)")?;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(display) = sockets(&runtime).into_iter().find(|s| !before.contains(s)) {
+        if let Some(display) = sockets_since(&runtime, since).into_iter().next() {
             log::info!(
                 "nested: sway on {display} ({mode} @ {scale}); log in {}",
                 dir.join("nested-sway.log").display()
