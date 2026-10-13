@@ -35,7 +35,9 @@ pub use connector::{Connector, Delivery, DeliverySink, Registry, valid_service_n
 const LUAU: &str = r#"
 local rt = __rt
 local subscriptions = {}
+local handles = {}
 function use(name)
+	if handles[name] then return handles[name] end
 	rt.invoke("service", "open", { service = name })
 	local svc = {}
 	function svc:subscribe(path)
@@ -54,7 +56,8 @@ function use(name)
 	function svc:action(method, args)
 		return rt.action("service", "call", { service = name, method = method, args = args })
 	end
-	return table.freeze(svc)
+	handles[name] = table.freeze(svc)
+	return handles[name]
 end
 "#;
 
@@ -64,9 +67,14 @@ const JS: &str = r#"
   const rt = globalThis.__rt;
   // One signal per (service, path) for the whole extension.
   const subscriptions = new Map();
+  // One handle per service: `use(name)` in a binding must not call the host
+  // every time (it counts against the call quota).
+  const handles = new Map();
   rt.define("use", (name) => {
+    const cached = handles.get(name);
+    if (cached) return cached;
     rt.invoke("service", "open", { service: name });
-    return Object.freeze({
+    const handle = Object.freeze({
       subscribe: (path) => {
         const key = name + "\0" + path;
         let s = subscriptions.get(key);
@@ -83,6 +91,8 @@ const JS: &str = r#"
       // extension code when fired; event data arrives in the call's args as `event`.
       action: (method, args) => rt.action("service", "call", { service: name, method, args: args ?? null }),
     });
+    handles.set(name, handle);
+    return handle;
   });
 })();
 "#;
