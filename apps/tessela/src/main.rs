@@ -1,0 +1,200 @@
+//! `tessela` — runs a project (a directory with `tessela.toml`).
+//!
+//! ```text
+//! tessela run <project> [--dev] [--headless [--seconds N]]
+//! ```
+//!
+//! `--dev` places surfaces next to the desktop's own bar instead of over it:
+//! top and bottom anchors swap and nothing reserves space.
+//!
+//! Logs go to stderr; `TESSELA_LOG=debug` for more, `TESSELA_LOG=warn` for less.
+//! Other crates (GPUI, zbus...) only log warnings.
+
+mod plugins;
+mod project;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use tessela::desktop::Desktop;
+use tessela::host::{App, Headless};
+use tessela::state::SharedState;
+use tessela::timer::Timers;
+use tessela::unix::UnixServices;
+
+use crate::plugins::Plugins;
+use crate::project::Project;
+
+const USAGE: &str = "\
+tessela run <project> [--dev] [--headless [--seconds N]]";
+
+struct Logger {
+    level: log::LevelFilter,
+}
+
+impl log::Log for Logger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        let ours = m.target().starts_with("tessela") || m.target().starts_with("marathon");
+        m.level()
+            <= if ours {
+                self.level
+            } else {
+                log::LevelFilter::Warn
+            }
+    }
+    fn log(&self, r: &log::Record) {
+        if self.enabled(r.metadata()) {
+            eprintln!("{:<5} {}", r.level(), r.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
+fn init_log() {
+    let level = match std::env::var("TESSELA_LOG").as_deref() {
+        Ok("debug") => log::LevelFilter::Debug,
+        Ok("warn") => log::LevelFilter::Warn,
+        Ok("error") => log::LevelFilter::Error,
+        _ => log::LevelFilter::Info,
+    };
+    let _ = log::set_boxed_logger(Box::new(Logger { level }));
+    log::set_max_level(log::LevelFilter::Debug);
+}
+
+struct RunArgs {
+    project: PathBuf,
+    dev: bool,
+    headless: bool,
+    seconds: Option<f64>,
+}
+
+fn run_args(mut it: impl Iterator<Item = String>) -> anyhow::Result<RunArgs> {
+    let mut a = RunArgs {
+        project: PathBuf::new(),
+        dev: false,
+        headless: false,
+        seconds: None,
+    };
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--dev" => a.dev = true,
+            "--headless" => a.headless = true,
+            "--seconds" => {
+                a.seconds = Some(it.next().context("--seconds needs a number")?.parse()?)
+            }
+            s if !s.starts_with('-') && a.project.as_os_str().is_empty() => a.project = s.into(),
+            other => anyhow::bail!("unknown argument {other}\n{USAGE}"),
+        }
+    }
+    anyhow::ensure!(!a.project.as_os_str().is_empty(), "which project?\n{USAGE}");
+    Ok(a)
+}
+
+fn theme_tokens(tokens: &HashMap<String, String>) -> HashMap<String, u32> {
+    tokens
+        .iter()
+        .filter_map(|(k, v)| {
+            let [r, g, b, _] = tessela::view::styled::parse_hex(v)?;
+            Some((k.clone(), (r as u32) << 16 | (g as u32) << 8 | b as u32))
+        })
+        .collect()
+}
+
+fn run(args: RunArgs) -> anyhow::Result<()> {
+    let project = Project::load(&args.project)?;
+    let runtime = project.runtime_dir();
+    let services = runtime.join("services");
+    std::fs::create_dir_all(&services)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(&services, std::fs::Permissions::from_mode(0o700))?;
+    }
+    log::info!(
+        "{}: {} surfaces ({}), {} plugins, services in {}",
+        project.name,
+        project.surfaces.len(),
+        project
+            .surfaces
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        project.plugins.len(),
+        services.display()
+    );
+
+    let plugins = Plugins::start(&project.plugins, &project.root, &services);
+    // Give plugins a moment to create their sockets before the first render.
+    if !project.plugins.is_empty() {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    let desktop = Arc::new(Desktop::new());
+    let mut builder = App::builder()
+        .engines(tessela::engines())
+        .module(UnixServices::new([services.clone()]))
+        .module(Timers::new())
+        .module(SharedState::with_store(project.state_file()));
+    for m in desktop.modules() {
+        builder = builder.shared_module(m);
+    }
+    for entry in project.entries() {
+        builder = builder.entry(entry);
+    }
+    let app = builder.build()?;
+
+    let result = if args.headless {
+        let mut r = Headless::new();
+        if let Some(s) = args.seconds {
+            r = r.for_duration(Duration::from_secs_f64(s));
+        }
+        app.run(r)
+    } else {
+        run_gpui(app, &project, &desktop, args.dev)
+    };
+    plugins.stop();
+    result
+}
+
+#[cfg(feature = "gpui")]
+fn run_gpui(
+    app: tessela::host::App,
+    project: &Project,
+    desktop: &Arc<Desktop>,
+    dev: bool,
+) -> anyhow::Result<()> {
+    use tessela::gpui::{Shell, Theme};
+    let images = Arc::new(desktop.images(Some(project.root.clone())));
+    let mut shell = Shell::new(project.name.clone());
+    shell.font = project.font.clone();
+    shell.theme = Theme {
+        dark: theme_tokens(&project.theme.dark),
+        light: theme_tokens(&project.theme.light),
+    };
+    shell.images = Arc::new(move |src| images.resolve(src));
+    shell.dev_placement = dev;
+    shell.scheme = Some(desktop.context.color_scheme());
+    app.run(shell)
+}
+
+#[cfg(not(feature = "gpui"))]
+fn run_gpui(_: tessela::host::App, _: &Project, _: &Arc<Desktop>, _: bool) -> anyhow::Result<()> {
+    anyhow::bail!("built without the `gpui` feature; use --headless")
+}
+
+fn main() -> anyhow::Result<()> {
+    init_log();
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("run") => run(run_args(args)?),
+        Some("-h" | "--help") | None => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        Some(other) => anyhow::bail!("unknown command {other}\n{USAGE}"),
+    }
+}

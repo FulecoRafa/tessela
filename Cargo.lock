@@ -6707,15 +6707,31 @@ dependencies = [
  "crossbeam-channel",
  "serde_json",
  "tessela-core",
+ "tessela-desktop",
  "tessela-gpui",
  "tessela-host",
  "tessela-luau",
  "tessela-proto",
  "tessela-quickjs",
+ "tessela-state",
  "tessela-timer",
  "tessela-tui",
  "tessela-unix",
  "tessela-view",
+]
+
+[[package]]
+name = "tessela-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+ "tessela",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

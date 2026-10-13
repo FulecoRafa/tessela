@@ -5,9 +5,9 @@
 //! | part | contract | shipped |
 //! |---|---|---|
 //! | engines | [`core::EngineFactory`] | `luau`, `quickjs` (JS/TSX) |
-//! | modules | [`core::Module`] | `unix` (services over Unix sockets), `timer` |
+//! | modules | [`core::Module`] | `unix` (services over Unix sockets), `timer`, `state` (shared values), `desktop` (context, Hyprland, system, apps, tray) |
 //! | renderers | [`host::Renderer`] | [`host::Headless`], `tui`, `gpui` |
-//! | extensions | `widget.toml` + entry file | written by users, sandboxed |
+//! | extensions | `widget.toml` + entry file, or project entries | written by users, sandboxed |
 //!
 //! ```no_run
 //! # #[cfg(all(feature = "luau", feature = "unix"))]
@@ -31,12 +31,16 @@ pub use tessela_host as host;
 pub use tessela_proto as proto;
 pub use tessela_view as view;
 
+#[cfg(feature = "desktop")]
+pub use tessela_desktop as desktop;
 #[cfg(feature = "gpui")]
 pub use tessela_gpui as gpui;
 #[cfg(feature = "luau")]
 pub use tessela_luau as luau;
 #[cfg(feature = "quickjs")]
 pub use tessela_quickjs as quickjs;
+#[cfg(feature = "state")]
+pub use tessela_state as state;
 #[cfg(feature = "timer")]
 pub use tessela_timer as timer;
 #[cfg(feature = "tui")]

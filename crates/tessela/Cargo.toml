@@ -14,6 +14,9 @@ quickjs = ["dep:tessela-quickjs"]
 # Modules
 unix = ["dep:tessela-unix"]
 timer = ["dep:tessela-timer"]
+state = ["dep:tessela-state"]
+# Linux desktop data: context, Hyprland, system, apps and icons, tray
+desktop = ["dep:tessela-desktop"]
 # Renderers (a headless renderer is always available)
 tui = ["dep:tessela-tui"]
 gpui = ["dep:tessela-gpui"]
@@ -27,6 +30,8 @@ tessela-luau = { workspace = true, optional = true }
 tessela-quickjs = { workspace = true, optional = true }
 tessela-unix = { workspace = true, optional = true }
 tessela-timer = { workspace = true, optional = true }
+tessela-state = { workspace = true, optional = true }
+tessela-desktop = { workspace = true, optional = true }
 tessela-tui = { workspace = true, optional = true }
 tessela-gpui = { workspace = true, optional = true }
 
