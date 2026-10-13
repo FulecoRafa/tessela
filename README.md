@@ -76,7 +76,7 @@ cargo build -p tessela-cli
 ./target/debug/tessela devtools ui                      # o mesmo numa janela, como o DevTools do navegador
 ```
 
-Decisões: [ADR 0015](docs/adr/0015-projetos.md) a [0020](docs/adr/0020-paineis-e-controles-continuos.md).
+Decisões: [ADR 0015](docs/adr/0015-projetos.md) a [0021](docs/adr/0021-movimento-no-renderer.md).
 
 ## Rodando a marathon
 

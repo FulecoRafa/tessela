@@ -25,3 +25,4 @@ Escreva um ADR novo que substitui o antigo; não reescreva o histórico.
 | [0018](0018-devtools.md) | Validar pelo devtools; modo `--nested` | aceita |
 | [0019](0019-devtools-grafico.md) | Devtools gráfico; destacar e selecionar nós na shell | aceita |
 | [0020](0020-paineis-e-controles-continuos.md) | Painéis sobre a barra; `Slider`, listas com altura máxima, texto que quebra | aceita |
+| [0021](0021-movimento-no-renderer.md) | Movimento no renderer: `Slider` com `rate`/`at`, onda e `onCommit`; `Image` com `radius` e `fit` | aceita |
