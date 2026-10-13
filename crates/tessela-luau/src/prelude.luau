@@ -35,6 +35,12 @@ function persist(key, initial)
 	return wrap(host.persist(key, initial))
 end
 
+-- A derived value: `fn` re-runs when what it reads changes, and code that
+-- reads the memo re-runs only when the result differs.
+function memo(fn)
+	return wrap(host.memo(fn))
+end
+
 function log(...)
 	local parts = table.pack(...)
 	for i = 1, parts.n do parts[i] = tostring(parts[i]) end

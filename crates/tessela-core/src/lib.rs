@@ -514,6 +514,7 @@ impl Instance {
         let mut result = Err(GuestError("not rendered".into()));
         // A binding may set a signal another binding read; settle in a few passes.
         for _ in 0..3 {
+            self.refresh_memos();
             let root = self.root.clone();
             result = self.materialize(&root, 0);
             if !self.ctx.core.borrow().is_dirty() {
@@ -529,6 +530,35 @@ impl Instance {
         }) {
             Ok(node) => node,
             Err(e) => Node::error(&self.name, &e.0),
+        }
+    }
+
+    /// Re-run memos whose inputs changed; each sets its signal only if the
+    /// result differs, which is what spares the code that reads it.
+    fn refresh_memos(&mut self) {
+        for _ in 0..8 {
+            let dirty = self.ctx.core.borrow().dirty_memos();
+            if dirty.is_empty() {
+                return;
+            }
+            for (f, sig) in dirty {
+                // An earlier memo of this pass may have disposed this one.
+                if !self.ctx.core.borrow().is_binding(f) {
+                    continue;
+                }
+                let prev = self.ctx.core.borrow_mut().begin_binding(f);
+                let r = self.engine.call(f, Value::Null);
+                self.ctx
+                    .core
+                    .borrow_mut()
+                    .end_binding(f, prev, r.as_ref().ok().cloned());
+                match r {
+                    Ok(v) => {
+                        let _ = self.ctx.core.borrow_mut().sig_set(sig, v);
+                    }
+                    Err(e) => self.ctx.core.borrow_mut().log(format!("memo failed: {e}")),
+                }
+            }
         }
     }
 

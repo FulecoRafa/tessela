@@ -568,3 +568,80 @@ fn broken_extensions_render_an_error_node() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The handler a node's `on_click` points at.
+fn click_fn(n: &Node) -> u64 {
+    match n.handler("on_click") {
+        Some(Handler::Fn(id)) => id,
+        other => panic!("no click handler: {other:?}"),
+    }
+}
+
+#[test]
+fn memos_spare_readers_when_the_result_is_unchanged() {
+    for (file, src) in [
+        (
+            "m.tsx",
+            r#"const wins = signal([{ cls: "term", title: "a" }]);
+               const classes = memo(() => wins().map((w) => w.cls).join(","));
+               export default <Row>
+                 <Button label="retitle" onClick={() => wins.update((ws) => ws.map((w) => ({ ...w, title: w.title + "!" })))} />
+                 <Button label="open" onClick={() => wins.update((ws) => [...ws, { cls: "web", title: "x" }])} />
+                 <Text text={() => { log("read"); return classes(); }} />
+               </Row>;"#,
+        ),
+        (
+            "m.luau",
+            r#"local wins = signal({ { cls = "term", title = "a" } })
+               local classes = memo(function()
+                 local out = {}
+                 for _, w in wins() do table.insert(out, w.cls) end
+                 return table.concat(out, ",")
+               end)
+               return Row {
+                 Button { label = "retitle", on_click = function()
+                   wins:update(function(ws)
+                     local out = {}
+                     for _, w in ws do table.insert(out, { cls = w.cls, title = w.title .. "!" }) end
+                     return out
+                   end)
+                 end },
+                 Button { label = "open", on_click = function()
+                   wins:update(function(ws)
+                     local out = table.clone(ws)
+                     table.insert(out, { cls = "web", title = "x" })
+                     return out
+                   end)
+                 end },
+                 Text { text = function() log("read"); return classes() end },
+               }"#,
+        ),
+    ] {
+        let mut h = h(file, src, &[], vec![]);
+        let node = h.inst.render();
+        assert_eq!(node.children[2].str("text"), Some("term"), "{file}");
+        assert_eq!(
+            h.inst.take_logs().len(),
+            1,
+            "{file}: first render reads once"
+        );
+        let (retitle, open) = (click_fn(&node.children[0]), click_fn(&node.children[1]));
+
+        h.inst.ui(retitle, Value::Null).unwrap();
+        let node = h.inst.render();
+        assert_eq!(node.children[2].str("text"), Some("term"));
+        assert!(
+            h.inst.take_logs().is_empty(),
+            "{file}: a title change must not re-run the reader"
+        );
+
+        h.inst.ui(open, Value::Null).unwrap();
+        let node = h.inst.render();
+        assert_eq!(node.children[2].str("text"), Some("term,web"), "{file}");
+        assert_eq!(
+            h.inst.take_logs().len(),
+            1,
+            "{file}: a new class re-runs it once"
+        );
+    }
+}

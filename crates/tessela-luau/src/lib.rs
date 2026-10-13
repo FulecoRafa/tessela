@@ -281,6 +281,18 @@ impl LuaEngine {
                 Ok(h.core.borrow_mut().sig_persist(&key, v))
             })?,
         )?;
+        let (h, f) = (host.clone(), fns.clone());
+        t.set(
+            "memo",
+            lua.create_function(move |_, func: mlua::Function| {
+                let id = h
+                    .core
+                    .borrow_mut()
+                    .register_fn(tessela_core::FnKind::Binding);
+                f.borrow_mut().insert(id, func);
+                Ok(h.core.borrow_mut().memo_new(id))
+            })?,
+        )?;
         let h = host.clone();
         t.set(
             "log",

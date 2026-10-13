@@ -22,6 +22,15 @@
   // Like `signal`, but the value survives reloads of this extension.
   const persist = (key, initial) => wrap(host.persist(String(key), enc(initial)));
   const log = (...parts) => host.log(parts.map(String).join(" "));
+  // A derived value: `f` re-runs when what it reads changes, and code that
+  // reads the memo re-runs only when the result differs (Solid's createMemo).
+  const memo = (f) => {
+    const s = wrap(host.memo(f));
+    const read = () => s();
+    read.peek = s.peek;
+    signals.add(read);
+    return Object.freeze(read);
+  };
 
   const Fragment = "Fragment";
   // JSX factory. Function components run once (Solid-style); reactivity comes
@@ -36,7 +45,7 @@
   };
 
   // `__jsx` is what transpiled JSX calls; `h` is the same, for hand-written trees.
-  const globals = { signal, persist, log, h, Fragment, __jsx: h, __jsxFragment: Fragment };
+  const globals = { signal, persist, memo, log, h, Fragment, __jsx: h, __jsxFragment: Fragment };
   for (const c of dec(host.components)) globals[c.name] = c.name;
   for (const [k, v] of Object.entries(globals)) {
     Object.defineProperty(globalThis, k, { value: v, writable: false, configurable: false, enumerable: false });

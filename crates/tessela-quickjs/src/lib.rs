@@ -380,6 +380,21 @@ fn install_host<'js>(ctx: &Ctx<'js>, host: &Rc<HostCtx>, fns: &FnMap) -> rquickj
             h.core.borrow_mut().sig_persist(&key, parse(&json))
         })?,
     )?;
+    let (h, f) = (host.clone(), fns.clone());
+    t.set(
+        "memo",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, func: Function<'js>| -> u64 {
+                let id = h
+                    .core
+                    .borrow_mut()
+                    .register_fn(tessela_core::FnKind::Binding);
+                f.borrow_mut().insert(id, Persistent::save(&ctx, func));
+                h.core.borrow_mut().memo_new(id)
+            },
+        )?,
+    )?;
     let h = host.clone();
     t.set(
         "log",

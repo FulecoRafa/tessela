@@ -43,6 +43,9 @@ struct Binding {
     deps: HashSet<SigId>,
     cached: Option<Value>,
     dirty: bool,
+    /// For memos: the signal holding the last result. Readers depend on
+    /// it, so they are dirtied only when the result actually changes.
+    memo: Option<SigId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -185,6 +188,32 @@ impl Core {
         }
         self.own(Owned::Fn(id));
         id
+    }
+
+    /// Make binding `f` a memo: its result is kept in a signal (returned)
+    /// that changes only when the result differs from the last one. The
+    /// instance re-evaluates dirty memos before every render, so code that
+    /// reads a memo re-runs only when the derived value changed.
+    pub fn memo_new(&mut self, f: FnId) -> SigId {
+        let sig = self.insert_signal(Value::Null, None, None);
+        if let Some(b) = self.bindings.get_mut(&f) {
+            b.memo = Some(sig);
+            b.dirty = true;
+        }
+        sig
+    }
+
+    /// Memos whose inputs changed since they last ran.
+    pub fn dirty_memos(&self) -> Vec<(FnId, SigId)> {
+        let mut out: Vec<(FnId, SigId)> = self
+            .bindings
+            .iter()
+            .filter(|(_, b)| b.dirty)
+            .filter_map(|(id, b)| b.memo.map(|s| (*id, s)))
+            .collect();
+        // Creation order, so a memo built on an older one runs after it.
+        out.sort_unstable();
+        out
     }
 
     pub fn sig_new(&mut self, value: Value) -> SigId {
