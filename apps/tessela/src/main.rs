@@ -228,7 +228,15 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("run") => run(run_args(args)?),
-        Some("devtools") => devtools::client(args),
+        Some("devtools") => {
+            // Piped into `head`: exit quietly instead of panicking. (Only
+            // here: the runner must survive writes to closed sockets.)
+            // SAFETY: restoring the default disposition of one signal.
+            unsafe {
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            }
+            devtools::client(args)
+        }
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             Ok(())
