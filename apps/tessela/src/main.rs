@@ -47,13 +47,16 @@ struct Logger {
 
 impl log::Log for Logger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        let ours = m.target().starts_with("tessela") || m.target().starts_with("marathon");
-        m.level()
-            <= if ours {
-                self.level
-            } else {
-                log::LevelFilter::Warn
-            }
+        let target = m.target();
+        let ours = target.starts_with("tessela") || target.starts_with("marathon");
+        // zbus warns whenever a name is owned without serving objects, which
+        // is what a StatusNotifierHost does by spec; its errors still show.
+        let others = if target.starts_with("zbus") {
+            log::LevelFilter::Error
+        } else {
+            log::LevelFilter::Warn
+        };
+        m.level() <= if ours { self.level } else { others }
     }
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
