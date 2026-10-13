@@ -509,7 +509,12 @@ impl Draw<'_> {
         if let Some(h) = p.handler("on_click") {
             let ui = ui.clone();
             clickable = true;
-            el = el.on_click(move |_, _, _| send(&ui, &h, Value::Null));
+            // The innermost clickable box takes the click: a close button on
+            // a clickable card does not also click the card.
+            el = el.on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                send(&ui, &h, Value::Null)
+            });
         }
         for (prop, button) in [
             ("on_right_click", MouseButton::Right),
