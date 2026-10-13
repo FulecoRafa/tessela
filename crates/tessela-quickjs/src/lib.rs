@@ -111,7 +111,19 @@ fn exception(ctx: &Ctx<'_>, e: rquickjs::Error) -> GuestError {
         if msg == "interrupted" {
             return GuestError("CPU budget exceeded".into());
         }
-        return GuestError(msg);
+        // Where it happened: the first frames of the guest's own code.
+        let at: Vec<String> = ex
+            .stack()
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().trim_start_matches("at ").to_string())
+            .filter(|l| !l.is_empty())
+            .take(3)
+            .collect();
+        if at.is_empty() {
+            return GuestError(msg);
+        }
+        return GuestError(format!("{msg} (at {})", at.join(" ← ")));
     }
     if caught.is_null() {
         // QuickJS throws `null` when it cannot even allocate the error object.
