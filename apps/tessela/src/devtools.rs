@@ -14,7 +14,9 @@
 //! | state | shared values, desktop topics, plugins, windows | modules, renderer |
 //!
 //! Actions: `click` triggers a node's handler as if the user did it; `shot`
-//! captures a surface's window with grim.
+//! captures a surface's window with grim; `highlight` outlines a node in the
+//! running shell and `pick` makes the next click there select a node instead
+//! (reported on the `picks` channel).
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
@@ -33,7 +35,14 @@ use tessela::view::{Handler, NodeId, ViewTree};
 const RING: usize = 1000;
 /// Signal values up to this size (JSON bytes) are kept with their delivery.
 const SIGNAL_VALUE_MAX: usize = 4096;
-const CHANNELS: &[&str] = &["console", "calls", "events", "frames", "deliveries"];
+const CHANNELS: &[&str] = &[
+    "console",
+    "calls",
+    "events",
+    "frames",
+    "deliveries",
+    "picks",
+];
 
 #[derive(Default, Clone)]
 struct SurfaceStats {
@@ -62,6 +71,9 @@ struct State {
     windows: Value,
     /// (slot, signal) → where it comes from: "hyprland:clients", "service:audio/state".
     signal_names: std::collections::HashMap<(usize, u64), String>,
+    /// The outlined node, and where the renderer last drew it.
+    highlight: Option<(usize, NodeId)>,
+    measured: Option<(usize, NodeId, [f32; 4])>,
 }
 
 /// What the runner shares with devtools besides the probes.
@@ -80,6 +92,9 @@ pub struct Devtools {
     state: Mutex<State>,
     watchers: Mutex<Vec<(Vec<String>, Sender<String>)>>,
     sources: Mutex<Option<Sources>>,
+    /// Highlight and pick requests, once the renderer attached.
+    #[cfg(feature = "gpui")]
+    control: Mutex<Option<tessela::gpui::InspectControl>>,
 }
 
 fn ms(d: Duration) -> f64 {
@@ -175,9 +190,13 @@ impl Devtools {
                 rings: CHANNELS.iter().map(|c| (*c, VecDeque::new())).collect(),
                 windows: json!([]),
                 signal_names: Default::default(),
+                highlight: None,
+                measured: None,
             }),
             watchers: Mutex::default(),
             sources: Mutex::default(),
+            #[cfg(feature = "gpui")]
+            control: Mutex::default(),
         })
     }
 
@@ -316,6 +335,7 @@ impl Devtools {
                     "surfaces": surfaces,
                     "windows": st.windows,
                     "plugins": src.as_ref().map(|s| s.plugins.status().into_iter().map(|(n, p)| json!({"name": n, "pid": p.pid, "starts": p.starts, "lastExit": p.last_exit})).collect::<Vec<_>>()),
+                    "highlight": st.highlight.map(|(s, id)| json!({ "surface": Self::name(&st, s), "id": id })),
                 })
             }
             "tree" => {
@@ -324,7 +344,7 @@ impl Devtools {
                 let root = req["id"].as_u64().or(tree.root()).context("empty tree")?;
                 tree_json(tree, root, 0, req["depth"].as_u64().unwrap_or(64) as usize)
             }
-            "console" | "calls" | "events" | "frames" | "deliveries" => {
+            "console" | "calls" | "events" | "frames" | "deliveries" | "picks" => {
                 let n = req["limit"].as_u64().unwrap_or(50) as usize;
                 let ring = &st
                     .rings
@@ -401,9 +421,119 @@ impl Devtools {
                 // The display it renders on (a nested compositor with --nested).
                 json!({ "window": win, "screen": screen, "display": std::env::var("WAYLAND_DISPLAY").ok() })
             }
+            "node" => {
+                let slot = Self::slot_of(&st, req)?;
+                let id = req["id"].as_u64().context("which node id?")?;
+                let tree = st.trees.tree(slot).context("no tree yet")?;
+                let mut v = node_json(tree, id).with_context(|| format!("no node #{id}"))?;
+                v["surface"] = json!(Self::name(&st, slot));
+                v["bounds"] = match st.measured {
+                    Some((s, n, b)) if s == slot && n == id => json!(b),
+                    _ => Value::Null,
+                };
+                v
+            }
+            "highlight" => {
+                // Without a surface and id: clear.
+                let target = match req["id"].as_u64() {
+                    Some(id) => {
+                        let slot = Self::slot_of(&st, req)?;
+                        st.trees
+                            .tree(slot)
+                            .and_then(|t| t.get(id))
+                            .with_context(|| format!("no node #{id}"))?;
+                        Some((slot, id))
+                    }
+                    None => None,
+                };
+                self.to_renderer(Ask::Highlight(target))?;
+                drop(st);
+                let mut st = self.state.lock().unwrap();
+                st.highlight = target;
+                json!({ "highlight": target.map(|(s, id)| json!({ "surface": Self::name(&st, s), "id": id })) })
+            }
+            "pick" => {
+                let on = req["on"].as_bool().unwrap_or(true);
+                self.to_renderer(Ask::Pick(on))?;
+                json!({ "picking": on })
+            }
             other => anyhow::bail!("unknown op '{other}'"),
         })
     }
+
+    #[cfg(feature = "gpui")]
+    fn to_renderer(&self, ask: Ask) -> anyhow::Result<()> {
+        use tessela::gpui::InspectCommand;
+        let control = self.control.lock().unwrap();
+        let control = control
+            .as_ref()
+            .context("the renderer does not inspect (headless?)")?;
+        let command = match ask {
+            Ask::Highlight(h) => InspectCommand::Highlight(h),
+            Ask::Pick(on) => InspectCommand::Pick(on),
+        };
+        anyhow::ensure!(control.send(command), "the renderer is gone");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "gpui"))]
+    fn to_renderer(&self, _: Ask) -> anyhow::Result<()> {
+        anyhow::bail!("built without the gpui renderer")
+    }
+}
+
+/// What devtools asks of the renderer (see `tessela::gpui::InspectCommand`).
+enum Ask {
+    Highlight(Option<(usize, NodeId)>),
+    Pick(bool),
+}
+
+/// One node in full: props (handlers labeled), handlers by prop, children
+/// ids and the path from the root.
+fn node_json(tree: &ViewTree, id: NodeId) -> Option<Value> {
+    let r = tree.get(id)?;
+    let mut props = serde_json::Map::new();
+    let mut handlers = serde_json::Map::new();
+    for (k, v) in &r.props {
+        match handler_label(k, v) {
+            Some(h) => {
+                handlers.insert(k.clone(), json!(h));
+            }
+            None => {
+                props.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    // Parents are not stored: walk down from the root.
+    fn path(tree: &ViewTree, at: NodeId, to: NodeId, out: &mut Vec<NodeId>) -> bool {
+        out.push(at);
+        if at == to {
+            return true;
+        }
+        let children = tree.get(at).map(|r| r.children.clone()).unwrap_or_default();
+        if children.into_iter().any(|c| path(tree, c, to, out)) {
+            return true;
+        }
+        out.pop();
+        false
+    }
+    let mut ids = vec![];
+    if let Some(root) = tree.root() {
+        path(tree, root, id, &mut ids);
+    }
+    let path: Vec<Value> = ids
+        .iter()
+        .filter_map(|i| Some(json!({ "id": i, "kind": tree.get(*i)?.kind })))
+        .collect();
+    Some(json!({
+        "id": id,
+        "kind": r.kind,
+        "key": r.key,
+        "props": props,
+        "handlers": handlers,
+        "children": r.children,
+        "path": path,
+    }))
 }
 
 impl Probe for Devtools {
@@ -565,6 +695,27 @@ impl tessela::gpui::RenderProbe for Devtools {
     fn windows(&self, windows: Vec<tessela::gpui::WindowInfo>) {
         self.state.lock().unwrap().windows = serde_json::to_value(windows).unwrap_or(Value::Null);
     }
+
+    fn attach(&self, control: tessela::gpui::InspectControl) {
+        *self.control.lock().unwrap() = Some(control);
+    }
+
+    fn picked(&self, slot: usize, node: Option<u64>, done: bool) {
+        let mut st = self.state.lock().unwrap();
+        if done && node.is_some() {
+            st.highlight = node.map(|n| (slot, n));
+        }
+        let kind = node
+            .and_then(|n| st.trees.tree(slot)?.get(n))
+            .map(|r| r.kind.clone());
+        let rec =
+            json!({ "surface": Self::name(&st, slot), "id": node, "kind": kind, "done": done });
+        self.push(&mut st, "picks", rec);
+    }
+
+    fn measured(&self, slot: usize, node: u64, bounds: [f32; 4]) {
+        self.state.lock().unwrap().measured = Some((slot, node, bounds));
+    }
 }
 
 // ---------------------------------------------------------------- client
@@ -576,12 +727,15 @@ tessela devtools [--project NAME] <command>
   tree <surface> [--depth N] [--id N] [--compact]
   find <surface> <text>         nodes whose kind or props contain text
   click <surface> <id> [--right|--middle|--scroll ±1|--handler PROP [--payload JSON]]
-  console|calls|events|frames|deliveries [-n N] [-f]
+  console|calls|events|frames|deliveries|picks [-n N] [-f]
   watch [channel...]            follow channels (all by default)
   state                         shared values and desktop topics
   set <key> <json>              change a shared value, as an extension would
   windows                       open windows and their placement
-  shot <surface> [file.png]     capture the surface's window (grim)";
+  shot <surface> [file.png]     capture the surface's window (grim)
+  node <surface> <id>           one node: props, handlers, path, drawn bounds
+  highlight <surface> <id>|off  outline a node in the running shell
+  pick                          next click in the shell selects a node; prints it";
 
 fn socket(project: Option<&str>) -> anyhow::Result<PathBuf> {
     let runtime = PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
@@ -974,7 +1128,7 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
                 v["payload"]
             );
         }
-        c @ ("console" | "calls" | "events" | "frames" | "deliveries") => {
+        c @ ("console" | "calls" | "events" | "frames" | "deliveries" | "picks") => {
             if flag("-f").is_some() {
                 return watch(&sock, vec![c.to_string()]);
             }
@@ -1002,6 +1156,47 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
             );
         }
         "shot" => shot(&sock, &arg(1).context("shot <surface>")?, arg(2))?,
+        "node" => {
+            let (surface, id) = (
+                arg(1).context("node <surface> <id>")?,
+                arg(2).context("node <surface> <id>")?,
+            );
+            let id: u64 = id.trim_start_matches('#').parse()?;
+            let v = ask(&sock, json!({ "op": "node", "surface": surface, "id": id }))?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        }
+        "highlight" => {
+            let req = match (arg(1), arg(2)) {
+                (Some(s), Some(id)) => {
+                    json!({ "op": "highlight", "surface": s, "id": id.trim_start_matches('#').parse::<u64>()? })
+                }
+                _ => json!({ "op": "highlight" }),
+            };
+            println!("{}", ask(&sock, req)?);
+        }
+        "pick" => {
+            // Listen first, so the pick cannot slip between the two.
+            let mut s = UnixStream::connect(&sock)?;
+            writeln!(s, "{}", json!({ "op": "watch", "channels": ["picks"] }))?;
+            ask(&sock, json!({ "op": "pick", "on": true }))?;
+            println!("click a node in the shell (right click cancels)");
+            for line in BufReader::new(s).lines() {
+                let v: Value = serde_json::from_str(&line?)?;
+                let r = &v["record"];
+                if r["done"] != true {
+                    continue;
+                }
+                match r["id"].as_u64() {
+                    Some(id) => println!(
+                        "{} #{id} {}",
+                        r["surface"].as_str().unwrap_or(""),
+                        r["kind"].as_str().unwrap_or("")
+                    ),
+                    None => println!("cancelled"),
+                }
+                break;
+            }
+        }
         other => anyhow::bail!("unknown devtools command {other}\n{USAGE}"),
     }
     Ok(())
@@ -1022,4 +1217,137 @@ fn watch(sock: &Path, channels: Vec<String>) -> anyhow::Result<()> {
         print_record(channel, &v["record"]);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tessela::view::Patch;
+
+    /// Devtools with one surface, `bar`: Surface #1 › Box #2 (on_click) › Label #3.
+    fn devtools() -> Arc<Devtools> {
+        let d = Devtools::new();
+        {
+            let mut st = d.state.lock().unwrap();
+            st.names = vec!["bar".into()];
+            st.trees = Trees::new(1);
+            st.surfaces = vec![SurfaceStats::default()];
+            let node = |id, kind: &str, props: Value| Patch::Create {
+                id,
+                kind: kind.into(),
+                key: None,
+                props: serde_json::from_value(props).unwrap(),
+            };
+            st.trees.apply(&Frame {
+                slot: 0,
+                patches: vec![
+                    node(1, "Surface", json!({ "anchor": "top" })),
+                    node(2, "Box", json!({ "on_click": 7, "gap": 4 })),
+                    node(3, "Label", json!({ "text": "hi" })),
+                    Patch::Children {
+                        id: 1,
+                        children: vec![2],
+                    },
+                    Patch::Children {
+                        id: 2,
+                        children: vec![3],
+                    },
+                    Patch::Root { id: 1 },
+                ],
+            });
+        }
+        d
+    }
+
+    #[test]
+    fn node_has_props_handlers_and_path() {
+        let d = devtools();
+        let v = d
+            .request(&json!({ "op": "node", "surface": "bar", "id": 2 }))
+            .unwrap();
+        assert_eq!(v["kind"], "Box");
+        assert_eq!(v["props"], json!({ "gap": 4 }));
+        assert_eq!(v["handlers"], json!({ "on_click": "fn#7" }));
+        assert_eq!(v["children"], json!([3]));
+        let path: Vec<u64> = v["path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(path, [1, 2]);
+        assert!(v["bounds"].is_null(), "not measured yet");
+        assert!(
+            d.request(&json!({ "op": "node", "surface": "bar", "id": 9 }))
+                .is_err()
+        );
+    }
+
+    #[cfg(feature = "gpui")]
+    #[test]
+    fn highlight_and_pick_go_to_the_renderer() {
+        use futures::StreamExt;
+        use tessela::gpui::{InspectCommand, InspectControl, RenderProbe};
+
+        let d = devtools();
+        let highlight = json!({ "op": "highlight", "surface": "bar", "id": 3 });
+        let err = d.request(&highlight).unwrap_err().to_string();
+        assert!(err.contains("does not inspect"), "{err}");
+
+        let (control, mut commands) = InspectControl::channel();
+        RenderProbe::attach(&*d, control);
+        let v = d.request(&highlight).unwrap();
+        assert_eq!(v["highlight"], json!({ "surface": "bar", "id": 3 }));
+        let next = |c: &mut futures::channel::mpsc::UnboundedReceiver<InspectCommand>| {
+            futures::executor::block_on(c.next()).unwrap()
+        };
+        assert_eq!(next(&mut commands), InspectCommand::Highlight(Some((0, 3))));
+        // Unknown nodes are refused; no id clears.
+        assert!(
+            d.request(&json!({ "op": "highlight", "surface": "bar", "id": 99 }))
+                .is_err()
+        );
+        let v = d.request(&json!({ "op": "highlight" })).unwrap();
+        assert!(v["highlight"].is_null());
+        assert_eq!(next(&mut commands), InspectCommand::Highlight(None));
+
+        d.request(&json!({ "op": "pick" })).unwrap();
+        assert_eq!(next(&mut commands), InspectCommand::Pick(true));
+        // The renderer reports the hover, then the click.
+        d.picked(0, Some(2), false);
+        d.picked(0, Some(3), true);
+        let picks = d.request(&json!({ "op": "picks" })).unwrap();
+        assert_eq!(picks.as_array().unwrap().len(), 2);
+        assert_eq!(picks[1]["id"], 3);
+        assert_eq!(picks[1]["kind"], "Label");
+        assert_eq!(picks[1]["done"], true);
+        assert_eq!(
+            d.state.lock().unwrap().highlight,
+            Some((0, 3)),
+            "a pick selects"
+        );
+
+        // Bounds the renderer measured show up in `node`.
+        d.measured(0, 3, [10.0, 4.0, 80.0, 16.0]);
+        let v = d
+            .request(&json!({ "op": "node", "surface": "bar", "id": 3 }))
+            .unwrap();
+        assert_eq!(v["bounds"], json!([10.0, 4.0, 80.0, 16.0]));
+    }
+
+    #[test]
+    fn picks_is_a_channel_and_log_lines_carry_their_place() {
+        assert!(CHANNELS.contains(&"picks"));
+        let d = devtools();
+        let (tx, rx) = unbounded();
+        d.watchers
+            .lock()
+            .unwrap()
+            .push((vec!["console".into()], tx));
+        d.log_at(0, "hello", Some("src/bar.tsx:12"));
+        let line: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(line["channel"], "console");
+        assert_eq!(line["record"]["at"], "src/bar.tsx:12");
+        assert_eq!(line["record"]["source"], "bar");
+    }
 }
