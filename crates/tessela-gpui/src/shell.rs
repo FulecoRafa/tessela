@@ -1260,57 +1260,61 @@ impl Renderer for Shell {
             ..
         } = self;
         let mut init = Some((slots, theme, font, images, inspector));
-        gpui_platform::application().run(move |cx: &mut App| {
-            let (slots, theme, font, images, inspector) = init.take().expect("runs once");
-            let n = slots.len();
-            let model = cx.new(|_| Model {
-                slots,
-                trees: Trees::new(n),
-                theme,
-                light: false,
-                font: font.map(SharedString::from),
-                images,
-                dev: dev_placement,
-                anchors: Rc::default(),
-                inputs: HashMap::new(),
-                inspector,
-                warned: RefCell::default(),
-            });
-            let mut frames = rx.take().expect("one run");
-            let m = model.clone();
-            let mut windows = Windows {
-                open: HashMap::new(),
-                app_id: app_id.clone(),
-            };
-            cx.spawn(async move |cx| {
-                while let Some(first) = frames.next().await {
-                    let mut batch = vec![first];
-                    while let Ok(f) = frames.try_recv() {
-                        batch.push(f);
-                    }
-                    m.update(cx, |m, cx| {
-                        for f in &batch {
-                            m.trees.apply(f);
+        // Surfaces open and close all the time (a reload swaps a window, every
+        // surface may be hidden): only an explicit quit ends a shell.
+        gpui_platform::application()
+            .with_quit_mode(gpui::QuitMode::Explicit)
+            .run(move |cx: &mut App| {
+                let (slots, theme, font, images, inspector) = init.take().expect("runs once");
+                let n = slots.len();
+                let model = cx.new(|_| Model {
+                    slots,
+                    trees: Trees::new(n),
+                    theme,
+                    light: false,
+                    font: font.map(SharedString::from),
+                    images,
+                    dev: dev_placement,
+                    anchors: Rc::default(),
+                    inputs: HashMap::new(),
+                    inspector,
+                    warned: RefCell::default(),
+                });
+                let mut frames = rx.take().expect("one run");
+                let m = model.clone();
+                let mut windows = Windows {
+                    open: HashMap::new(),
+                    app_id: app_id.clone(),
+                };
+                cx.spawn(async move |cx| {
+                    while let Some(first) = frames.next().await {
+                        let mut batch = vec![first];
+                        while let Ok(f) = frames.try_recv() {
+                            batch.push(f);
                         }
-                        cx.notify();
-                    });
-                    windows.sync(&m, cx);
-                }
-            })
-            .detach();
-            let mut schemes = scheme_rx.take().expect("one run");
-            let m = model.clone();
-            cx.spawn(async move |cx| {
-                while let Some(s) = schemes.next().await {
-                    m.update(cx, |m, cx| {
-                        m.light = s == "light";
-                        log::info!("shell: color scheme {s}");
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
-        });
+                        m.update(cx, |m, cx| {
+                            for f in &batch {
+                                m.trees.apply(f);
+                            }
+                            cx.notify();
+                        });
+                        windows.sync(&m, cx);
+                    }
+                })
+                .detach();
+                let mut schemes = scheme_rx.take().expect("one run");
+                let m = model.clone();
+                cx.spawn(async move |cx| {
+                    while let Some(s) = schemes.next().await {
+                        m.update(cx, |m, cx| {
+                            m.light = s == "light";
+                            log::info!("shell: color scheme {s}");
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            });
         Ok(())
     }
 }
