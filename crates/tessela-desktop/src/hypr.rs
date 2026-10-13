@@ -2,6 +2,7 @@
 //! Hyprland's IPC sockets; `dispatch` for actions.
 //!
 //! Needs the capability `hyprland`; dispatching needs `hyprland:dispatch`.
+//! `switchLayout(index)` switches every keyboard's layout (same capability).
 //! The `exec` dispatchers are refused: launching programs is the `apps`
 //! module's job (`apps:launch`), so a dispatch grant is not an exec grant.
 
@@ -198,6 +199,7 @@ impl Hyprland {
     keyboardLayout: () => topic("hyprland", "keyboardLayout")() ?? "",
     dispatch: (command) => {{ rt.invoke("hyprland", "dispatch", {{ command: String(command) }}); }},
     dispatchAction: (command) => rt.action("hyprland", "dispatch", {{ command: String(command) }}),
+    switchLayout: (index) => {{ rt.invoke("hyprland", "switchLayout", {{ index }}); }},
   }}));
 }})();
 "#
@@ -211,6 +213,7 @@ hyprland = table.freeze({{
 	keyboardLayout = function() return topic("hyprland", "keyboardLayout")() or "" end,
 	dispatch = function(command) rt.invoke("hyprland", "dispatch", {{ command = tostring(command) }}) end,
 	dispatchAction = function(command) return rt.action("hyprland", "dispatch", {{ command = tostring(command) }}) end,
+	switchLayout = function(index) rt.invoke("hyprland", "switchLayout", {{ index = index }}) end,
 }})
 "#
         );
@@ -355,6 +358,21 @@ impl Module for Hyprland {
                 if reply.trim() != "ok" {
                     log::warn!("hyprland: dispatch {command}: {}", reply.trim());
                 }
+                Ok(Value::Null)
+            }
+            // `hyprctl switchxkblayout` is a command, not a dispatcher; it is the
+            // only command offered (others, like `keyword`, rewrite the config).
+            "switchLayout" => {
+                cx.require("hyprland:dispatch")?;
+                let index = args["index"]
+                    .as_u64()
+                    .ok_or("index must be a number >= 0")?;
+                let hypr = self
+                    .hypr
+                    .as_ref()
+                    .ok_or("hyprland: not running under Hyprland")?;
+                hypr.request(&format!("switchxkblayout all {index}"))
+                    .map_err(|e| format!("hyprland: {e}"))?;
                 Ok(Value::Null)
             }
             other => Err(format!("hyprland: unknown function '{other}'")),
