@@ -17,3 +17,5 @@ serde_json.workspace = true
 serde.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
+resvg.workspace = true
+image.workspace = true

@@ -8,6 +8,7 @@
 
 mod inspect;
 mod shell;
+mod svg;
 
 pub use inspect::{InspectCommand, InspectControl, Inspector, RenderProbe, WindowInfo};
 pub use shell::{ImageResolver, Shell, Theme};

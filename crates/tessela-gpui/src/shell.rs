@@ -38,6 +38,7 @@ use tessela_view::text::{icon, short_error};
 use tessela_view::{CORE, ERROR, Handler, NodeId, Tone, ViewTree};
 
 use crate::inspect::{InspectCommand, InspectControl, Inspector, WindowInfo};
+use crate::svg;
 
 // ---------------------------------------------------------------- options
 
@@ -530,7 +531,7 @@ impl Draw<'_> {
         match r.kind.as_str() {
             styled::BOX | styled::SURFACE => self.boxed(id, r, window, cx),
             styled::LABEL => self.label(r),
-            styled::IMAGE => self.image(r),
+            styled::IMAGE => self.image(r, window),
             styled::RING => self.ring(id, r, window, cx),
             styled::SLIDER => self.slider(id, r),
             styled::INPUT => self.input(id, r, window, cx),
@@ -771,15 +772,23 @@ impl Draw<'_> {
             .into_any_element()
     }
 
-    fn image(&self, r: &Retained) -> AnyElement {
+    fn image(&self, r: &Retained, window: &Window) -> AnyElement {
         let p = P(r);
-        let size = px(p.f32("size").unwrap_or(16.0));
+        let side = p.f32("size").unwrap_or(16.0);
+        let size = px(side);
         let mut el = div().size(size).flex_shrink_0();
         if let Some(o) = p.f32("opacity") {
             el = el.opacity(o.clamp(0.0, 1.0));
         }
         let src = p.str("src").unwrap_or_default();
         match (self.m.images)(&src) {
+            Some(path) if svg::is_svg(&path) => {
+                let device = (side * window.scale_factor()).ceil() as u32;
+                match svg::render(&path, device) {
+                    Some(image) => el.child(img(image).size(size)).into_any_element(),
+                    None => el.into_any_element(),
+                }
+            }
             Some(path) => el.child(img(path).size(size)).into_any_element(),
             None => el.into_any_element(),
         }
