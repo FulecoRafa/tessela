@@ -367,7 +367,9 @@ impl Model {
                 continue;
             }
             let mut placement = Placement::of(root, self.dev);
-            placement.keyboard = has_kind(tree, id, styled::INPUT);
+            // A panel (it dismisses) may grow an `Input` while open, like a
+            // password field; changing interactivity would reopen its window.
+            placement.keyboard = placement.overlay || has_kind(tree, id, styled::INPUT);
             out.push((WindowKey::Surface(slot), placement));
             for popup in open_popups(tree, id) {
                 let mut p = Placement::popup(self.dev);
