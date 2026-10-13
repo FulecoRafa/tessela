@@ -22,8 +22,18 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Running at least this long resets the backoff.
 const HEALTHY: Duration = Duration::from_secs(10);
 
+/// What devtools shows per plugin.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PluginStatus {
+    pub pid: Option<u32>,
+    pub starts: u32,
+    /// How the last run ended (exit status or a spawn error).
+    pub last_exit: Option<String>,
+}
+
 pub struct Plugins {
     children: Arc<Mutex<Vec<(String, u32)>>>,
+    status: Arc<Mutex<std::collections::BTreeMap<String, PluginStatus>>>,
     stopping: Arc<AtomicBool>,
 }
 
@@ -81,10 +91,17 @@ impl Plugins {
     ) -> Self {
         let children: Arc<Mutex<Vec<(String, u32)>>> = Arc::default();
         let stopping = Arc::new(AtomicBool::new(false));
+        let status: Arc<Mutex<std::collections::BTreeMap<String, PluginStatus>>> =
+            Arc::new(Mutex::new(
+                plugins
+                    .keys()
+                    .map(|n| (n.clone(), PluginStatus::default()))
+                    .collect(),
+            ));
         for (name, cfg) in plugins {
             let (name, cfg) = (name.clone(), cfg.clone());
             let (root, services): (PathBuf, PathBuf) = (root.to_path_buf(), services.to_path_buf());
-            let (children, stopping) = (children.clone(), stopping.clone());
+            let (children, stopping, status) = (children.clone(), stopping.clone(), status.clone());
             thread::Builder::new()
                 .name(format!("plugin-{name}"))
                 .spawn(move || {
@@ -95,16 +112,27 @@ impl Plugins {
                             Ok(mut child) => {
                                 log::info!("plugin {name}: started (pid {})", child.id());
                                 children.lock().unwrap().push((name.clone(), child.id()));
-                                let status = child.wait();
+                                if let Some(s) = status.lock().unwrap().get_mut(&name) {
+                                    s.pid = Some(child.id());
+                                    s.starts += 1;
+                                }
+                                let exit = child.wait();
                                 let pid = child.id();
                                 children.lock().unwrap().retain(|(_, p)| *p != pid);
+                                if let Some(s) = status.lock().unwrap().get_mut(&name) {
+                                    s.pid = None;
+                                    s.last_exit = Some(format!("{exit:?}"));
+                                }
                                 if stopping.load(Ordering::Relaxed) {
                                     break;
                                 }
-                                log::warn!("plugin {name}: exited ({status:?})");
+                                log::warn!("plugin {name}: exited ({exit:?})");
                             }
                             Err(e) => {
-                                log::warn!("plugin {name}: cannot start {:?}: {e}", cfg.command)
+                                if let Some(s) = status.lock().unwrap().get_mut(&name) {
+                                    s.last_exit = Some(e.to_string());
+                                }
+                                log::warn!("plugin {name}: cannot start {:?}: {e}", cfg.command);
                             }
                         }
                         if started.elapsed() > HEALTHY {
@@ -116,12 +144,16 @@ impl Plugins {
                 })
                 .expect("spawn plugin supervisor");
         }
-        Self { children, stopping }
+        Self {
+            children,
+            status,
+            stopping,
+        }
     }
 
-    /// Running plugins: (name, pid).
-    pub fn running(&self) -> Vec<(String, u32)> {
-        self.children.lock().unwrap().clone()
+    /// Every configured plugin, running or not.
+    pub fn status(&self) -> std::collections::BTreeMap<String, PluginStatus> {
+        self.status.lock().unwrap().clone()
     }
 
     pub fn stop(&self) {

@@ -31,6 +31,8 @@ use tessela::host::{Frame, GraphStats, Probe, Slot, Trees, UiEvent};
 use tessela::view::{Handler, NodeId, ViewTree};
 
 const RING: usize = 1000;
+/// Signal values up to this size (JSON bytes) are kept with their delivery.
+const SIGNAL_VALUE_MAX: usize = 4096;
 const CHANNELS: &[&str] = &["console", "calls", "events", "frames", "deliveries"];
 
 #[derive(Default, Clone)]
@@ -313,7 +315,7 @@ impl Devtools {
                     "uptime": self.t(),
                     "surfaces": surfaces,
                     "windows": st.windows,
-                    "plugins": src.as_ref().map(|s| s.plugins.running().into_iter().map(|(n, p)| json!({"name": n, "pid": p})).collect::<Vec<_>>()),
+                    "plugins": src.as_ref().map(|s| s.plugins.status().into_iter().map(|(n, p)| json!({"name": n, "pid": p.pid, "starts": p.starts, "lastExit": p.last_exit})).collect::<Vec<_>>()),
                 })
             }
             "tree" => {
@@ -477,10 +479,19 @@ impl Probe for Devtools {
             s.deliveries += 1;
         }
         let (kind, detail) = match inbound {
-            Inbound::Signal { sig, value } => (
-                "signal",
-                json!({ "sig": sig, "from": st.signal_names.get(&(slot, *sig)), "bytes": value.to_string().len() }),
-            ),
+            Inbound::Signal { sig, value } => {
+                let bytes = value.to_string().len();
+                // Small values are kept for the devtools network panel.
+                let value = if bytes <= SIGNAL_VALUE_MAX {
+                    value.clone()
+                } else {
+                    Value::Null
+                };
+                (
+                    "signal",
+                    json!({ "sig": sig, "from": st.signal_names.get(&(slot, *sig)), "bytes": bytes, "value": value }),
+                )
+            }
             Inbound::Callback { f, value } => ("callback", json!({ "fn": f, "value": value })),
             Inbound::Finished(r) => ("finished", json!({ "module": r.module, "key": r.key })),
         };
@@ -502,9 +513,10 @@ impl Probe for Devtools {
         }
     }
 
-    fn log(&self, slot: usize, line: &str) {
+    fn log_at(&self, slot: usize, line: &str, at: Option<&str>) {
         let mut st = self.state.lock().unwrap();
-        let rec = json!({ "source": Self::name(&st, slot), "level": "log", "text": line });
+        let rec =
+            json!({ "source": Self::name(&st, slot), "level": "log", "text": line, "at": at });
         self.push(&mut st, "console", rec);
     }
 
@@ -701,10 +713,14 @@ fn print_record(channel: &str, r: &Value) {
     let t = r["t"].as_f64().unwrap_or(0.0);
     let line = match channel {
         "console" => format!(
-            "{:<5} [{}] {}",
+            "{:<5} [{}] {}{}",
             r["level"].as_str().unwrap_or(""),
             r["source"].as_str().unwrap_or(""),
-            r["text"].as_str().unwrap_or("")
+            r["text"].as_str().unwrap_or(""),
+            r["at"]
+                .as_str()
+                .map(|a| format!("  ({a})"))
+                .unwrap_or_default()
         ),
         "calls" => format!(
             "{:<7} {}({}) → {}{} {:.2}ms",
@@ -889,7 +905,14 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|p| format!("{} ({})", p["name"].as_str().unwrap_or(""), p["pid"]))
+                    .map(|p| match p["pid"].as_u64() {
+                        Some(pid) => format!("{} ({pid})", p["name"].as_str().unwrap_or("")),
+                        None => format!(
+                            "{} (stopped: {})",
+                            p["name"].as_str().unwrap_or(""),
+                            p["lastExit"].as_str().unwrap_or("not started")
+                        ),
+                    })
                     .collect();
                 println!("  plugins: {}", plugins.join(", "));
             }

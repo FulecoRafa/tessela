@@ -61,7 +61,10 @@ impl log::Log for Logger {
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
             eprintln!("{:<5} {}", r.level(), r.args());
-            if let Some(d) = DEVTOOLS.get() {
+            // Guest logs reach the devtools console through the probe already.
+            if let Some(d) = DEVTOOLS.get()
+                && r.target() != "tessela::guest"
+            {
                 d.host_log(r.level(), &r.args().to_string());
             }
         }
