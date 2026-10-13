@@ -105,6 +105,10 @@ const IMAGE_PROPS: &[PropSpec] = &[
     req("src", PropType::String),
     req("size", PropType::Number),
     opt("opacity", PropType::Number),
+    // Rounded corners, clipping the picture (album covers).
+    opt("radius", PropType::Radius),
+    // "contain" (default) shows all of it; "cover" fills the square, cropping.
+    opt("fit", PropType::Enum(&["contain", "cover"])),
 ];
 
 const RING_PROPS: &[PropSpec] = &[
@@ -362,6 +366,7 @@ mod tests {
                     {"type": "Label", "text": "hi", "color": "#fff", "weight": "bold"},
                     {"type": "Ring", "value": 0.5, "size": 32, "children": ["50"]},
                     {"type": "Slider", "value": 0.3, "width": "50%", "on_change": 4},
+                    {"type": "Image", "src": "file:/a.png", "size": 40, "radius": 8, "fit": "cover"},
                     {"type": "Label", "text": "a long body", "wrap": true, "lines": 3},
                     {"type": "Input", "value": "abc", "secret": true},
                 ]},
@@ -373,7 +378,7 @@ mod tests {
         assert_eq!(lowered.children[0].children[1].kind, "Progress");
         assert_eq!(lowered.children[0].children[2].kind, "Progress");
         assert_eq!(
-            lowered.children[0].children[4].props["text"],
+            lowered.children[0].children[5].props["text"],
             json!("•••"),
             "secret input text never reaches a fallback"
         );
@@ -382,6 +387,9 @@ mod tests {
         assert!(bad(json!({"type": "Box", "bg": "red"})).contains("color"));
         assert!(bad(json!({"type": "Box", "direction": "diagonal"})).contains("one of"));
         assert!(bad(json!({"type": "Slider"})).contains("value"));
+        assert!(
+            bad(json!({"type": "Image", "src": "a", "size": 4, "fit": "fill"})).contains("one of")
+        );
         assert!(bad(json!({"type": "Slider", "value": 1, "width": "wide"})).contains("width"));
         assert!(
             bad(json!({"type": "Box", "children": [{"type": "Surface", "anchor": "top"}]}))

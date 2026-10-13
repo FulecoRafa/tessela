@@ -25,10 +25,10 @@ use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions}
 use gpui::{
     AnyElement, App, AppContext, AsyncApp, Bounds, Context, DispatchPhase, Div, ElementId, Entity,
     FocusHandle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, Rgba, ScrollDelta,
-    ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement, Styled, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div,
-    img, point, prelude::*, px, relative, rgb,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, Rgba,
+    ScrollDelta, ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement,
+    Styled, StyledImage, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
+    WindowKind, WindowOptions, canvas, div, img, point, prelude::*, px, relative, rgb,
 };
 use serde_json::{Value, json};
 use tessela_host::{Frame, Renderer, Slot, Surface, Trees, UiEvent};
@@ -781,15 +781,32 @@ impl Draw<'_> {
             el = el.opacity(o.clamp(0.0, 1.0));
         }
         let src = p.str("src").unwrap_or_default();
+        let fit = if p.str("fit").as_deref() == Some("cover") {
+            ObjectFit::Cover
+        } else {
+            ObjectFit::Contain
+        };
+        let radius = r.props.get("radius").and_then(styled::radius);
+        let style = move |i: gpui::Img| {
+            let i = i.size(size).object_fit(fit);
+            match radius {
+                Some([tl, tr, br, bl]) => i
+                    .rounded_tl(px(tl))
+                    .rounded_tr(px(tr))
+                    .rounded_br(px(br))
+                    .rounded_bl(px(bl)),
+                None => i,
+            }
+        };
         match (self.m.images)(&src) {
             Some(path) if svg::is_svg(&path) => {
                 let device = (side * window.scale_factor()).ceil() as u32;
                 match svg::render(&path, device) {
-                    Some(image) => el.child(img(image).size(size)).into_any_element(),
+                    Some(image) => el.child(style(img(image))).into_any_element(),
                     None => el.into_any_element(),
                 }
             }
-            Some(path) => el.child(img(path).size(size)).into_any_element(),
+            Some(path) => el.child(style(img(path))).into_any_element(),
             None => el.into_any_element(),
         }
     }
