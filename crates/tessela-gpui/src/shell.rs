@@ -230,6 +230,9 @@ impl Placement {
 /// Text being edited in an `Input`; the renderer owns it while focused.
 struct InputState {
     text: String,
+    /// The value last sent to the guest. A `value` prop that differs from it
+    /// was set by the guest itself (cleared after submit, say) and wins.
+    sent: String,
     focus: FocusHandle,
 }
 
@@ -726,9 +729,22 @@ impl Draw<'_> {
         let key = (self.slot, id);
         let state = self.m.inputs.get(&key);
         let focused = state.is_some_and(|s| s.focus.is_focused(window));
+        let value = p.str("value").unwrap_or_default();
         let text = match state {
-            Some(s) if focused => s.text.clone(),
-            _ => p.str("value").unwrap_or_default(),
+            Some(s) if focused && s.sent == value => s.text.clone(),
+            Some(s) if s.text != value || s.sent != value => {
+                let (model, adopted) = (self.model.clone(), value.clone());
+                window.defer(cx, move |_, cx| {
+                    model.update(cx, |m, _| {
+                        if let Some(s) = m.inputs.get_mut(&key) {
+                            s.text = adopted.clone();
+                            s.sent = adopted;
+                        }
+                    });
+                });
+                value
+            }
+            _ => value,
         };
         let size = p.f32("size").unwrap_or(13.0);
         let color = self
@@ -751,7 +767,8 @@ impl Draw<'_> {
                 window.defer(cx, move |window, cx| {
                     model.update(cx, |m, _| {
                         m.inputs.entry(key).or_insert(InputState {
-                            text: init,
+                            text: init.clone(),
+                            sent: init,
                             focus: f2.clone(),
                         });
                     });
@@ -802,6 +819,7 @@ impl Draw<'_> {
                         "backspace" => {
                             s.text.pop();
                             changed = Some(s.text.clone());
+                            s.sent = s.text.clone();
                         }
                         "enter" => submit = Some(s.text.clone()),
                         "escape" => {}
@@ -810,6 +828,7 @@ impl Draw<'_> {
                             if let Some(ch) = &ks.key_char {
                                 s.text.push_str(ch);
                                 changed = Some(s.text.clone());
+                                s.sent = s.text.clone();
                             }
                         }
                     }
