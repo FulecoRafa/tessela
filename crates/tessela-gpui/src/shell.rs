@@ -613,6 +613,9 @@ impl Draw<'_> {
         if let Some(w) = p.f32("maxWidth") {
             el = el.max_w(px(w)).overflow_hidden();
         }
+        if let Some(h) = p.f32("maxHeight") {
+            el = el.max_h(px(h)).overflow_hidden();
+        }
         if p.bool("grow") {
             el = el.flex_grow(1.0).flex_basis(px(0.0)).min_w(px(0.0));
         }

@@ -68,6 +68,7 @@ const BOX_PROPS: &[PropSpec] = &[
     opt("height", PropType::Length),
     opt("minWidth", PropType::Number),
     opt("maxWidth", PropType::Number),
+    opt("maxHeight", PropType::Number),
     opt("grow", PropType::Bool),
     opt("bg", PropType::Color),
     opt("border", PropType::Color),
