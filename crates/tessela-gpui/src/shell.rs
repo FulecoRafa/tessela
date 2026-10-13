@@ -714,6 +714,13 @@ impl Draw<'_> {
                 .text_ellipsis()
                 .flex_shrink(1.0);
         }
+        if p.bool("wrap") {
+            // Width comes from the parent; the text takes the lines it needs.
+            el = el.whitespace_normal().flex_shrink(1.0).min_w(px(0.0));
+            if let Some(n) = p.f32("lines").filter(|n| *n >= 1.0) {
+                el = el.line_clamp(n as usize).text_ellipsis();
+            }
+        }
         el.child(p.str("text").unwrap_or_default())
             .into_any_element()
     }

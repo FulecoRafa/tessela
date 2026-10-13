@@ -95,6 +95,10 @@ const LABEL_PROPS: &[PropSpec] = &[
     ),
     opt("font", PropType::String),
     opt("maxWidth", PropType::Number),
+    // Wrap onto as many lines as the parent's width needs, cut with an
+    // ellipsis past `lines` when given.
+    opt("wrap", PropType::Bool),
+    opt("lines", PropType::Number),
 ];
 
 const IMAGE_PROPS: &[PropSpec] = &[
@@ -352,6 +356,7 @@ mod tests {
                     {"type": "Label", "text": "hi", "color": "#fff", "weight": "bold"},
                     {"type": "Ring", "value": 0.5, "size": 32, "children": ["50"]},
                     {"type": "Slider", "value": 0.3, "width": "50%", "on_change": 4},
+                    {"type": "Label", "text": "a long body", "wrap": true, "lines": 3},
                 ]},
             ]}))
             .unwrap();
