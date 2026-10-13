@@ -331,6 +331,15 @@ impl Devtools {
                 json!({ "shared": src.state.snapshot(), "desktop": src.desktop.snapshot() })
             }
             "windows" => st.windows.clone(),
+            "set" => {
+                let key = req["key"].as_str().context("which key?")?;
+                let src = self.sources.lock().unwrap();
+                src.as_ref()
+                    .context("not attached")?
+                    .state
+                    .set(key, req["value"].clone());
+                json!({ "set": key, "value": req["value"] })
+            }
             "click" => {
                 let slot = Self::slot_of(&st, req)?;
                 let id = req["id"].as_u64().context("which node id?")?;
@@ -539,6 +548,7 @@ tessela devtools [--project NAME] <command>
   console|calls|events|frames|deliveries [-n N] [-f]
   watch [channel...]            follow channels (all by default)
   state                         shared values and desktop topics
+  set <key> <json>              change a shared value, as an extension would
   windows                       open windows and their placement
   shot <surface> [file.png]     capture the surface's window (grim)";
 
@@ -929,6 +939,19 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
             "{}",
             serde_json::to_string_pretty(&ask(&sock, json!({ "op": cmd }))?)?
         ),
+        "set" => {
+            let (key, value) = (
+                arg(1).context("set <key> <json>")?,
+                arg(2).context("set <key> <json>")?,
+            );
+            let value: Value = serde_json::from_str(&value).with_context(|| {
+                format!("not JSON: {value} (strings need quotes: '\"drawer\"')")
+            })?;
+            println!(
+                "{}",
+                ask(&sock, json!({ "op": "set", "key": key, "value": value }))?
+            );
+        }
         "shot" => shot(&sock, &arg(1).context("shot <surface>")?, arg(2))?,
         other => anyhow::bail!("unknown devtools command {other}\n{USAGE}"),
     }
