@@ -1091,10 +1091,15 @@ fn draw_window(
                     let cx_ = ox + f32::from(a.center().x);
                     let x = (cx_ - width / 2.0)
                         .clamp(8.0, (f32::from(viewport.width) - width - 8.0).max(8.0));
+                    // From a bar (a surface on one edge with a fixed height),
+                    // open past the whole bar, not just past the item.
+                    let bar = h.height > 0.0 && h.top != h.bottom;
                     if h.bottom && !h.top {
-                        (x, oy + f32::from(a.top()) - 6.0, true)
+                        let edge = if bar { 0.0 } else { f32::from(a.top()) };
+                        (x, oy + edge.min(f32::from(a.top())) - 6.0, true)
                     } else {
-                        (x, oy + f32::from(a.bottom()) + 6.0, false)
+                        let edge = if bar { h.height } else { f32::from(a.bottom()) };
+                        (x, oy + edge.max(f32::from(a.bottom())) + 6.0, false)
                     }
                 }
                 _ => (8.0, 8.0, false),
