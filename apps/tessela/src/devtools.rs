@@ -359,7 +359,7 @@ impl Devtools {
                 let node = tree.get(id).with_context(|| format!("no node #{id}"))?;
                 let (prop, payload) = match req["button"].as_str().unwrap_or("left") {
                     _ if req["prop"].is_string() => {
-                        (req["prop"].as_str().unwrap_or(""), Value::Null)
+                        (req["prop"].as_str().unwrap_or(""), req["payload"].clone())
                     }
                     "right" => ("on_right_click", Value::Null),
                     "middle" => ("on_middle_click", Value::Null),
@@ -563,7 +563,7 @@ tessela devtools [--project NAME] <command>
   perf                          render and draw times per surface
   tree <surface> [--depth N] [--id N] [--compact]
   find <surface> <text>         nodes whose kind or props contain text
-  click <surface> <id> [--right|--middle|--scroll ±1|--handler on_dismiss]
+  click <surface> <id> [--right|--middle|--scroll ±1|--handler PROP [--payload JSON]]
   console|calls|events|frames|deliveries [-n N] [-f]
   watch [channel...]            follow channels (all by default)
   state                         shared values and desktop topics
@@ -938,6 +938,9 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
             let mut req = json!({ "op": "click", "surface": surface, "id": id, "button": button, "delta": num("--scroll").unwrap_or(1) });
             if let Some(prop) = flag("--handler").and_then(|i| rest.get(i + 1)) {
                 req["prop"] = json!(prop);
+            }
+            if let Some(payload) = flag("--payload").and_then(|i| rest.get(i + 1)) {
+                req["payload"] = serde_json::from_str(payload).context("--payload must be JSON")?;
             }
             let v = ask(&sock, req)?;
             println!(
