@@ -68,6 +68,9 @@ pub struct Sources {
     pub state: Arc<tessela::state::SharedState>,
     pub desktop: Arc<tessela::desktop::Desktop>,
     pub plugins: Arc<crate::plugins::Plugins>,
+    /// Logical size of the screen surfaces are on, when it is not the
+    /// desktop's (--nested).
+    pub screen: Option<[f64; 2]>,
 }
 
 pub struct Devtools {
@@ -377,10 +380,13 @@ impl Devtools {
             "geometry" => {
                 let slot = Self::slot_of(&st, req)?;
                 let src = self.sources.lock().unwrap();
-                let screen = src
-                    .as_ref()
-                    .map(|s| s.desktop.snapshot()["hyprland"]["screen"].clone())
-                    .unwrap_or(Value::Null);
+                let screen = match src.as_ref() {
+                    Some(s) => match s.screen {
+                        Some([w, h]) => json!({ "width": w, "height": h }),
+                        None => s.desktop.snapshot()["hyprland"]["screen"].clone(),
+                    },
+                    None => Value::Null,
+                };
                 let win = st
                     .windows
                     .as_array()
@@ -390,7 +396,8 @@ impl Devtools {
                     })
                     .cloned()
                     .context("that surface has no open window")?;
-                json!({ "window": win, "screen": screen })
+                // The display it renders on (a nested compositor with --nested).
+                json!({ "window": win, "screen": screen, "display": std::env::var("WAYLAND_DISPLAY").ok() })
             }
             other => anyhow::bail!("unknown op '{other}'"),
         })
@@ -792,9 +799,12 @@ fn shot(sock: &Path, surface: &str, file: Option<String>) -> anyhow::Result<()> 
         height.round()
     );
     let file = file.unwrap_or_else(|| format!("{surface}.png"));
-    let status = std::process::Command::new("grim")
-        .args(["-g", &geometry, &file])
-        .status();
+    let mut grim = std::process::Command::new("grim");
+    grim.args(["-g", &geometry, &file]);
+    if let Some(display) = g["display"].as_str() {
+        grim.env("WAYLAND_DISPLAY", display);
+    }
+    let status = grim.status();
     match status {
         Ok(s) if s.success() => println!("{file} ({geometry})"),
         _ => anyhow::bail!("grim failed or is missing; run: grim -g \"{geometry}\" {file}"),

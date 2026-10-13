@@ -1,17 +1,20 @@
 //! `tessela` — runs a project (a directory with `tessela.toml`).
 //!
 //! ```text
-//! tessela run <project> [--dev] [--devtools] [--headless [--seconds N]]
+//! tessela run <project> [--dev | --nested[=WxH@SCALE]] [--devtools] [--headless [--seconds N]]
 //! tessela devtools [--project NAME] <command>     (see devtools.rs)
 //! ```
 //!
 //! `--dev` places surfaces next to the desktop's own bar instead of over it:
 //! top and bottom anchors swap and nothing reserves space.
+//! `--nested` renders into a headless sway of its own (see nested.rs), for
+//! previews and screenshots without a screen.
 //!
 //! Logs go to stderr; `TESSELA_LOG=debug` for more, `TESSELA_LOG=warn` for less.
 //! Other crates (GPUI, zbus...) only log warnings.
 
 mod devtools;
+mod nested;
 mod plugins;
 mod project;
 
@@ -32,7 +35,7 @@ use crate::plugins::Plugins;
 use crate::project::Project;
 
 const USAGE: &str = "\
-tessela run <project> [--dev] [--devtools] [--headless [--seconds N]]
+tessela run <project> [--dev | --nested[=WxH@SCALE]] [--devtools] [--headless [--seconds N]]
 tessela devtools [--project NAME] <command>   (tessela devtools --help)";
 
 /// Set when running with --devtools: log lines also go to its console.
@@ -77,6 +80,8 @@ fn init_log() {
 struct RunArgs {
     project: PathBuf,
     dev: bool,
+    /// Render into a headless sway: `WxH@SCALE`.
+    nested: Option<String>,
     devtools: bool,
     headless: bool,
     seconds: Option<f64>,
@@ -86,6 +91,7 @@ fn run_args(mut it: impl Iterator<Item = String>) -> anyhow::Result<RunArgs> {
     let mut a = RunArgs {
         project: PathBuf::new(),
         dev: false,
+        nested: None,
         devtools: false,
         headless: false,
         seconds: None,
@@ -94,6 +100,8 @@ fn run_args(mut it: impl Iterator<Item = String>) -> anyhow::Result<RunArgs> {
         match arg.as_str() {
             "--dev" => a.dev = true,
             "--devtools" => a.devtools = true,
+            "--nested" => a.nested = Some("1920x1080@1.25".into()),
+            s if s.starts_with("--nested=") => a.nested = Some(s["--nested=".len()..].to_string()),
             "--headless" => a.headless = true,
             "--seconds" => {
                 a.seconds = Some(it.next().context("--seconds needs a number")?.parse()?)
@@ -121,6 +129,19 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
     let runtime = project.runtime_dir();
     let services = runtime.join("services");
     std::fs::create_dir_all(&services)?;
+    // Before any thread starts: it changes this process's environment.
+    let _nested = match &args.nested {
+        Some(spec) => {
+            let n = nested::start(&runtime, spec)?;
+            // SAFETY: no other thread exists yet.
+            unsafe {
+                std::env::set_var("WAYLAND_DISPLAY", &n.display);
+                std::env::remove_var("DISPLAY");
+            }
+            Some(n)
+        }
+        None => None,
+    };
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
@@ -160,6 +181,7 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
             state: state.clone(),
             desktop: desktop.clone(),
             plugins: plugins.clone(),
+            screen: args.nested.as_deref().and_then(nested::logical_size),
         });
         let _ = DEVTOOLS.set(d.clone());
         d

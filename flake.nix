@@ -24,6 +24,10 @@
             go
             python3
             pkg-config
+            # Devtools: a headless compositor to render into (--nested) and
+            # screenshots of surfaces (tessela devtools shot).
+            sway
+            grim
             # mlua (luau, vendored) and rquickjs compile C/C++ sources.
             stdenv.cc
           ];
