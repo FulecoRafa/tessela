@@ -11,6 +11,7 @@
 //! stable node ids — what a remote renderer will receive over the wire.
 
 pub mod patch;
+pub mod styled;
 pub mod text;
 
 use std::collections::BTreeMap;
@@ -152,6 +153,18 @@ pub enum PropType {
     Number,
     Bool,
     Tone,
+    /// `#rrggbb[aa]` or a theme token `$name` (styled::is_color).
+    Color,
+    /// Pixels, or a percentage string `"62%"`.
+    Length,
+    /// A number, `[vertical, horizontal]` or `[top, right, bottom, left]`.
+    Sides,
+    /// A number or `[top-left, top-right, bottom-right, bottom-left]`.
+    Radius,
+    /// `{ top?, right?, bottom?, left? }` with numbers.
+    Place,
+    /// One of a fixed set of strings.
+    Enum(&'static [&'static str]),
     /// An event prop: a guest function or an action. `payload` documents what
     /// the renderer passes along (`null` for clicks).
     Handler {
@@ -166,17 +179,29 @@ impl PropType {
             PropType::Number => v.is_number(),
             PropType::Bool => v.is_boolean(),
             PropType::Tone => v.as_str().and_then(Tone::parse).is_some(),
+            PropType::Color => v.as_str().is_some_and(styled::is_color),
+            PropType::Length => styled::Length::parse(v).is_some(),
+            PropType::Sides => styled::sides(v).is_some(),
+            PropType::Radius => styled::radius(v).is_some(),
+            PropType::Place => styled::place(v).is_some(),
+            PropType::Enum(options) => v.as_str().is_some_and(|s| options.contains(&s)),
             PropType::Handler { .. } => Handler::from_value(v).is_some(),
         }
     }
 
-    fn name(self) -> &'static str {
+    fn name(self) -> String {
         match self {
-            PropType::String => "string",
-            PropType::Number => "number",
-            PropType::Bool => "boolean",
-            PropType::Tone => "tone (normal|muted|accent|warning|critical)",
-            PropType::Handler { .. } => "function or action",
+            PropType::String => "string".into(),
+            PropType::Number => "number".into(),
+            PropType::Bool => "boolean".into(),
+            PropType::Tone => "tone (normal|muted|accent|warning|critical)".into(),
+            PropType::Color => "color (#rrggbb, #rrggbbaa or $token)".into(),
+            PropType::Length => "length (pixels or \"N%\")".into(),
+            PropType::Sides => "number, [v, h] or [top, right, bottom, left]".into(),
+            PropType::Radius => "number or [tl, tr, br, bl]".into(),
+            PropType::Place => "{ top?, right?, bottom?, left? } of numbers".into(),
+            PropType::Enum(options) => format!("one of {}", options.join("|")),
+            PropType::Handler { .. } => "function or action".into(),
         }
     }
 }
@@ -304,10 +329,11 @@ pub struct Vocabulary {
 }
 
 impl Default for Vocabulary {
+    /// The core components plus the styled primitives (docs/adr/0015).
     fn default() -> Self {
-        Self {
-            specs: core_specs(),
-        }
+        let mut specs = core_specs();
+        specs.extend(styled::specs());
+        Self { specs }
     }
 }
 
@@ -361,6 +387,11 @@ impl Vocabulary {
             .get(&kind)
             .filter(|s| s.name != ERROR)
             .ok_or_else(|| InvalidTree(format!("unknown component '{kind}'")))?;
+        if kind == styled::SURFACE && depth > 0 {
+            return Err(InvalidTree(
+                "Surface is only valid as the root of an entry".into(),
+            ));
+        }
         let key = match map.remove("key") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(s),
