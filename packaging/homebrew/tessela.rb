@@ -1,5 +1,5 @@
 # Homebrew formula for tessela (Linux only), for a tap, e.g.
-#   brew tap <owner>/tessela <git url of a tap repo holding this file>
+#   brew tap FulecoRafa/tessela <git url of a tap repo holding this file>
 #   brew install tessela
 # See README.md next to this file for how to release and test it.
 class Tessela < Formula
@@ -7,8 +7,8 @@ class Tessela < Formula
   # Placeholders until the project is published: point `url` at the release
   # tarball (`git archive --prefix=tessela-0.1.0/ -o tessela-0.1.0.tar.gz v0.1.0`)
   # and set `sha256` to `shasum -a 256 tessela-0.1.0.tar.gz`.
-  homepage "https://example.invalid/tessela"
-  url "https://example.invalid/tessela/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/FulecoRafa/tessela"
+  url "https://github.com/FulecoRafa/tessela/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license any_of: ["MIT", "Apache-2.0"]
 

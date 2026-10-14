@@ -34,7 +34,7 @@ baked into the image) or with Nix; with brew's tessela, `tessela run
 2. Set `url` (where the tarball is published), `homepage` and
    `sha256` (`sha256sum tessela-0.1.0.tar.gz`) in `tessela.rb`.
 3. Put `tessela.rb` in `Formula/` of a tap repository (`homebrew-tessela`);
-   users then run `brew install <owner>/tessela/tessela`.
+   users then run `brew install FulecoRafa/tessela/tessela`.
 
 ## Testing locally (in Docker)
 

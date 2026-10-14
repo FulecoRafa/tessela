@@ -46,7 +46,7 @@ License:        (MIT OR Apache-2.0) AND %{shrink:
                 bzip2-1.0.6
                 }
 # Provisional: the project has no public home yet (see docs/adr/0008).
-URL:            https://example.invalid/tessela
+URL:            https://github.com/FulecoRafa/tessela
 Source0:        %{name}-%{version}.tar.xz
 Source1:        %{name}-%{version}-vendor.tar.xz
 

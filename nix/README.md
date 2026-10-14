@@ -40,7 +40,7 @@ with `src` replaced by a `fetchFromGitHub` of a release.
 ## Using it from another flake
 
 ```nix
-inputs.tessela.url = "git+file:///home/fuleco/Dev/tessela"; # or github:<owner>/tessela once published
+inputs.tessela.url = "github:FulecoRafa/tessela";
 # then either
 environment.systemPackages = [ inputs.tessela.packages.${pkgs.stdenv.hostPlatform.system}.default ];
 # or
