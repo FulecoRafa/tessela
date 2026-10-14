@@ -6819,6 +6819,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessela-service"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "async-executor",
+ "async-io",
+ "async-lock",
+ "async-net",
+ "async-process",
+ "async-signal",
+ "blocking",
+ "futures-lite",
+ "libc",
+ "serde",
+ "serde_json",
+ "zbus",
+]
+
+[[package]]
 name = "tessela-state"
 version = "0.1.0"
 dependencies = [

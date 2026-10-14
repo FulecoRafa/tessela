@@ -1,0 +1,37 @@
+[package]
+name = "tessela-service"
+description = "Write tessela/Marathon services in Rust: topics, methods, several services in one process"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["tessela", "service", "unix-socket", "json", "shell"]
+categories = ["asynchronous", "network-programming"]
+
+[features]
+default = ["process"]
+# run / run_status / follow: external commands with timeouts, killed with the service.
+process = ["dep:async-process"]
+# Shared session/system connections (zbus on the same async-io runtime).
+dbus = ["dep:zbus", "dep:async-lock"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# The smol family: already what zbus runs on in this workspace (tessela-desktop),
+# single-threaded here, no tokio. See docs/adr/0022.
+async-executor = "1"
+async-io = "2"
+async-net = "2"
+async-channel = "2"
+async-signal = "0.2"
+blocking = "1"
+futures-lite = "2"
+libc = "0.2"
+async-process = { version = "2", optional = true }
+async-lock = { version = "3", optional = true }
+zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }
+
+[[example]]
+name = "counter"

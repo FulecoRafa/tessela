@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "apps/*"]
+members = ["crates/*", "apps/*", "sdk/rust"]
 # Default `cargo build` skips the GPUI renderer (heavy, needs desktop libs).
 default-members = [
     "crates/tessela",
@@ -16,6 +16,7 @@ default-members = [
     "crates/tessela-desktop",
     "crates/tessela-tui",
     "apps/marathon",
+    "sdk/rust",
 ]
 
 [workspace.package]
