@@ -1,7 +1,7 @@
 //! `tessela` — runs a project (a directory with `tessela.toml`).
 //!
 //! ```text
-//! tessela run <project> [--dev | --nested[=WxH@SCALE]] [--devtools] [--headless [--seconds N]]
+//! tessela run <project> [--dev | --nested[=WxH@SCALE]] [--devtools] [--name NAME] [--headless [--seconds N]]
 //! tessela devtools [--project NAME] <command>     (see devtools.rs)
 //! ```
 //!
@@ -37,7 +37,7 @@ use crate::plugins::Plugins;
 use crate::project::Project;
 
 const USAGE: &str = "\
-tessela run <project> [--dev | --nested[=WxH@SCALE]] [--devtools] [--headless [--seconds N]]
+tessela run <project> [--dev | --nested[=WxH@SCALE]] [--devtools] [--name NAME] [--headless [--seconds N]]
 tessela devtools [--project NAME] <command>   (tessela devtools --help)";
 
 /// Set when running with --devtools: log lines also go to its console.
@@ -93,6 +93,9 @@ struct RunArgs {
     devtools: bool,
     headless: bool,
     seconds: Option<f64>,
+    /// Run under another name (its own sockets and state): a development
+    /// copy beside the installed one.
+    name: Option<String>,
 }
 
 fn run_args(mut it: impl Iterator<Item = String>) -> anyhow::Result<RunArgs> {
@@ -103,6 +106,7 @@ fn run_args(mut it: impl Iterator<Item = String>) -> anyhow::Result<RunArgs> {
         devtools: false,
         headless: false,
         seconds: None,
+        name: None,
     };
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -111,6 +115,7 @@ fn run_args(mut it: impl Iterator<Item = String>) -> anyhow::Result<RunArgs> {
             "--nested" => a.nested = Some("1920x1080@1.25".into()),
             s if s.starts_with("--nested=") => a.nested = Some(s["--nested=".len()..].to_string()),
             "--headless" => a.headless = true,
+            "--name" => a.name = Some(it.next().context("--name needs a name")?),
             "--seconds" => {
                 a.seconds = Some(it.next().context("--seconds needs a number")?.parse()?)
             }
@@ -133,7 +138,14 @@ fn theme_tokens(tokens: &HashMap<String, String>) -> HashMap<String, u32> {
 }
 
 fn run(args: RunArgs) -> anyhow::Result<()> {
-    let project = Project::load(&args.project)?;
+    let mut project = Project::load(&args.project)?;
+    if let Some(name) = &args.name {
+        anyhow::ensure!(
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "--name must be [a-zA-Z0-9_-]"
+        );
+        project.name = name.clone();
+    }
     let runtime = project.runtime_dir();
     let services = runtime.join("services");
     std::fs::create_dir_all(&services)?;
