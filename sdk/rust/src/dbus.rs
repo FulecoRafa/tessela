@@ -5,8 +5,9 @@
 //! polling a CLI is what keeps a service idle. Every service in the process
 //! shares one connection per bus.
 //!
-//! zbus is built with `async-io` (not `tokio`), the runtime this crate uses;
-//! it runs its socket I/O on its own small thread.
+//! zbus is built with `async-io` (not `tokio`), the runtime this crate uses,
+//! and its connections made here run on the host thread (no executor thread
+//! per connection). Call these from inside [`crate::Host::run`].
 
 use async_lock::OnceCell;
 use futures_lite::{Stream, StreamExt};
@@ -20,12 +21,31 @@ static SYSTEM: OnceCell<Connection> = OnceCell::new();
 
 /// The process's session bus connection.
 pub async fn session() -> zbus::Result<Connection> {
-    SESSION.get_or_try_init(Connection::session).await.cloned()
+    SESSION
+        .get_or_try_init(|| async { connect(zbus::connection::Builder::session()?).await })
+        .await
+        .cloned()
 }
 
 /// The process's system bus connection.
 pub async fn system() -> zbus::Result<Connection> {
-    SYSTEM.get_or_try_init(Connection::system).await.cloned()
+    SYSTEM
+        .get_or_try_init(|| async { connect(zbus::connection::Builder::system()?).await })
+        .await
+        .cloned()
+}
+
+/// A connection of your own (a monitor, say), driven by the host thread.
+pub async fn connect(builder: zbus::connection::Builder<'_>) -> zbus::Result<Connection> {
+    let conn = builder.internal_executor(false).build().await?;
+    let ex = conn.executor().clone();
+    crate::spawn(async move {
+        loop {
+            ex.tick().await;
+        }
+    })
+    .detach();
+    Ok(conn)
 }
 
 /// Messages matching `rule` (the match is registered on the bus and removed
