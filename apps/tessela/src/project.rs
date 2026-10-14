@@ -13,6 +13,10 @@
 //! [plugins.audio]                      # a service the runner keeps alive
 //! command = ["python3", "plugins/audio.py"]
 //!
+//! [plugins.services]                   # one process serving several sockets
+//! command = ["services/target/release/my-services"]   # relative paths: inside the project
+//! services = ["network", "power"]     # waited for before the first render
+//!
 //! [imports]                            # packages: import { Icon } from "@kit/Icon"
 //! kit = "../my-kit"                     # a directory, relative to the project
 //!
@@ -68,6 +72,11 @@ pub struct PluginConfig {
     pub command: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// The services (sockets) it serves, when it is not just the one named
+    /// like the plugin: the runner waits for them before the first render
+    /// and devtools shows which are up.
+    #[serde(default)]
+    pub services: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -103,6 +112,19 @@ impl Project {
         );
         for name in p.surfaces.keys().chain(p.plugins.keys()) {
             anyhow::ensure!(valid_name(name), "name '{name}' must be [a-zA-Z0-9_-]");
+        }
+        let mut served = std::collections::BTreeSet::new();
+        for (name, plugin) in &p.plugins {
+            for s in &plugin.services {
+                anyhow::ensure!(
+                    valid_name(s),
+                    "plugin {name}: service name '{s}' must be [a-zA-Z0-9_-]"
+                );
+                anyhow::ensure!(
+                    served.insert(s.clone()),
+                    "service '{s}' is declared by two plugins"
+                );
+            }
         }
         for (name, s) in &p.surfaces {
             anyhow::ensure!(
@@ -187,5 +209,43 @@ impl Project {
                 PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state")
             });
         base.join("tessela").join(&self.name).join("state.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(toml: &str) -> anyhow::Result<Project> {
+        let dir = std::env::temp_dir().join(format!(
+            "tessela-project-{}-{}",
+            std::process::id(),
+            toml.len()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tessela.toml"), toml).unwrap();
+        Project::load(&dir)
+    }
+
+    #[test]
+    fn a_plugin_may_declare_several_services_once_each() {
+        let ok = project(
+            "name = \"p\"\n[surfaces]\n[plugins.all]\ncommand = [\"bin/all\"]\nservices = [\"audio\", \"power\"]\n",
+        )
+        .unwrap();
+        assert_eq!(ok.plugins["all"].services, ["audio", "power"]);
+        let twice = project(
+            "name = \"p\"\n[surfaces]\n[plugins.a]\ncommand = [\"a\"]\nservices = [\"audio\"]\n[plugins.b]\ncommand = [\"b\"]\nservices = [\"audio\", \"x\"]\n",
+        );
+        assert!(
+            twice
+                .unwrap_err()
+                .to_string()
+                .contains("declared by two plugins")
+        );
+        let bad = project(
+            "name = \"p\"\n[surfaces]\n[plugins.a]\ncommand = [\"a\"]\nservices = [\"../x\"]\n",
+        );
+        assert!(bad.is_err());
     }
 }

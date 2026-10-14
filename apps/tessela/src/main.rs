@@ -170,9 +170,22 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
     );
 
     let plugins = Arc::new(Plugins::start(&project.plugins, &project.root, &services));
-    // Give plugins a moment to create their sockets before the first render.
+    // Give plugins a moment to create their sockets before the first render:
+    // the declared ones are waited for (up to 3 s), the others get 300 ms.
     if !project.plugins.is_empty() {
-        std::thread::sleep(Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let declared: Vec<String> = project
+            .plugins
+            .values()
+            .flat_map(|p| p.services.iter().cloned())
+            .collect();
+        let missing = plugins::wait_for_services(&declared, &services, Duration::from_secs(3));
+        if !missing.is_empty() {
+            log::warn!("services not up after 3 s: {}", missing.join(", "));
+        }
+        if project.plugins.values().any(|p| p.services.is_empty()) {
+            std::thread::sleep(Duration::from_millis(300).saturating_sub(started.elapsed()));
+        }
     }
 
     let desktop = Arc::new(Desktop::new());

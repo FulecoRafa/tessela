@@ -335,7 +335,7 @@ impl Devtools {
                     "uptime": self.t(),
                     "surfaces": surfaces,
                     "windows": st.windows,
-                    "plugins": src.as_ref().map(|s| s.plugins.status().into_iter().map(|(n, p)| json!({"name": n, "pid": p.pid, "starts": p.starts, "lastExit": p.last_exit})).collect::<Vec<_>>()),
+                    "plugins": src.as_ref().map(|s| s.plugins.status().into_iter().map(|(n, p)| json!({"name": n, "pid": p.pid, "starts": p.starts, "lastExit": p.last_exit, "services": p.services.iter().map(|(s, up)| json!({"name": s, "up": up})).collect::<Vec<_>>()})).collect::<Vec<_>>()),
                     "highlight": st.highlight.map(|(s, id)| json!({ "surface": Self::name(&st, s), "id": id })),
                 })
             }
@@ -1063,13 +1063,27 @@ pub fn client(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|p| match p["pid"].as_u64() {
-                        Some(pid) => format!("{} ({pid})", p["name"].as_str().unwrap_or("")),
-                        None => format!(
-                            "{} (stopped: {})",
-                            p["name"].as_str().unwrap_or(""),
-                            p["lastExit"].as_str().unwrap_or("not started")
-                        ),
+                    .map(|p| {
+                        let state = match p["pid"].as_u64() {
+                            Some(pid) => format!("{} ({pid})", p["name"].as_str().unwrap_or("")),
+                            None => format!(
+                                "{} (stopped: {})",
+                                p["name"].as_str().unwrap_or(""),
+                                p["lastExit"].as_str().unwrap_or("not started")
+                            ),
+                        };
+                        // A plugin serving several sockets: say which are down.
+                        let services = p["services"].as_array().cloned().unwrap_or_default();
+                        let down: Vec<&str> = services
+                            .iter()
+                            .filter(|s| s["up"] != true)
+                            .filter_map(|s| s["name"].as_str())
+                            .collect();
+                        match (services.len(), down.is_empty()) {
+                            (0 | 1, true) => state,
+                            (n, true) => format!("{state} [{n} services up]"),
+                            _ => format!("{state} [down: {}]", down.join(" ")),
+                        }
                     })
                     .collect();
                 println!("  plugins: {}", plugins.join(", "));

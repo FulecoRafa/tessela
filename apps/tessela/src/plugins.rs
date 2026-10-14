@@ -6,6 +6,11 @@
 //! to the log, prefixed with the plugin's name. A plugin that exits is
 //! restarted, waiting longer each time it dies quickly; all of them are
 //! killed (with their children) when the runner exits.
+//!
+//! A plugin may serve several services (one socket each) from one process;
+//! `services = [...]` names them, so the runner can wait for their sockets
+//! and devtools can tell which are up. A relative program path with a `/`
+//! (`services/target/release/x`) is inside the project.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
@@ -29,9 +34,15 @@ pub struct PluginStatus {
     pub starts: u32,
     /// How the last run ended (exit status or a spawn error).
     pub last_exit: Option<String>,
+    /// The sockets it serves (declared, or the one named like it) and
+    /// whether each exists.
+    pub services: Vec<(String, bool)>,
 }
 
 pub struct Plugins {
+    /// Declared services per plugin (or its own name), and where they live.
+    serves: std::collections::BTreeMap<String, Vec<String>>,
+    dir: PathBuf,
     children: Arc<Mutex<Vec<(String, u32)>>>,
     status: Arc<Mutex<std::collections::BTreeMap<String, PluginStatus>>>,
     stopping: Arc<AtomicBool>,
@@ -42,7 +53,7 @@ fn spawn(name: &str, cfg: &PluginConfig, root: &Path, services: &Path) -> std::i
         .command
         .split_first()
         .ok_or_else(|| std::io::Error::other("empty command"))?;
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(resolve(root, program));
     cmd.args(args)
         .current_dir(root)
         .env("TESSELA_SERVICES_DIR", services)
@@ -144,16 +155,33 @@ impl Plugins {
                 })
                 .expect("spawn plugin supervisor");
         }
+        let serves = plugins
+            .iter()
+            .map(|(n, c)| {
+                let s = if c.services.is_empty() {
+                    vec![n.clone()]
+                } else {
+                    c.services.clone()
+                };
+                (n.clone(), s)
+            })
+            .collect();
         Self {
             children,
             status,
             stopping,
+            serves,
+            dir: services.to_path_buf(),
         }
     }
 
     /// Every configured plugin, running or not.
     pub fn status(&self) -> std::collections::BTreeMap<String, PluginStatus> {
-        self.status.lock().unwrap().clone()
+        let mut all = self.status.lock().unwrap().clone();
+        for (name, s) in all.iter_mut() {
+            s.services = services_up(&self.serves[name], &self.dir);
+        }
+        all
     }
 
     pub fn stop(&self) {
@@ -172,5 +200,118 @@ impl Plugins {
 impl Drop for Plugins {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// A relative program path with a `/` is relative to the project, whatever
+/// the runner's own directory; a bare name is looked up in `PATH`.
+fn resolve(root: &Path, program: &str) -> PathBuf {
+    let p = Path::new(program);
+    if program.contains('/') && p.is_relative() {
+        root.join(p)
+    } else {
+        p.to_path_buf()
+    }
+}
+
+/// Wait until every named service accepts connections on `<dir>/<name>.sock`,
+/// at most `timeout`. Returns the ones still missing.
+pub fn wait_for_services(names: &[String], dir: &Path, timeout: Duration) -> Vec<String> {
+    let deadline = Instant::now() + timeout;
+    let mut missing: Vec<String> = names.to_vec();
+    loop {
+        missing.retain(|n| {
+            std::os::unix::net::UnixStream::connect(dir.join(format!("{n}.sock"))).is_err()
+        });
+        if missing.is_empty() || Instant::now() >= deadline {
+            return missing;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Which of `names` have a socket in `dir` right now.
+pub fn services_up(names: &[String], dir: &Path) -> Vec<(String, bool)> {
+    names
+        .iter()
+        .map(|n| (n.clone(), dir.join(format!("{n}.sock")).exists()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    fn temp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tessela-plugins-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn relative_programs_live_in_the_project() {
+        let root = Path::new("/p/shell");
+        assert_eq!(
+            resolve(root, "services/target/release/x"),
+            Path::new("/p/shell/services/target/release/x")
+        );
+        assert_eq!(resolve(root, "./bin/x"), Path::new("/p/shell/./bin/x"));
+        assert_eq!(resolve(root, "python3"), Path::new("python3"));
+        assert_eq!(resolve(root, "/usr/bin/x"), Path::new("/usr/bin/x"));
+    }
+
+    #[test]
+    fn a_relative_program_starts_from_the_project() {
+        let root = temp("prog");
+        let services = root.join("run");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let script = root.join("bin/hello");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho \"$TESSELA_PLUGIN\" > \"$TESSELA_SERVICES_DIR/../out\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(&services).unwrap();
+        let cfg = PluginConfig {
+            command: vec!["bin/hello".into()],
+            env: Default::default(),
+            services: vec![],
+        };
+        // The runner's own directory is elsewhere; the path still resolves.
+        let mut child = spawn("hello", &cfg, &root, &services).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(
+            std::fs::read_to_string(root.join("out")).unwrap().trim(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn waits_for_every_declared_socket() {
+        let dir = temp("wait");
+        let names = vec!["audio".to_string(), "power".to_string()];
+        let d = dir.clone();
+        let t = thread::spawn(move || {
+            let a = UnixListener::bind(d.join("audio.sock")).unwrap();
+            thread::sleep(Duration::from_millis(150));
+            let p = UnixListener::bind(d.join("power.sock")).unwrap();
+            thread::sleep(Duration::from_millis(500));
+            drop((a, p));
+        });
+        let start = Instant::now();
+        assert!(wait_for_services(&names, &dir, Duration::from_secs(3)).is_empty());
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        assert_eq!(
+            services_up(&names, &dir),
+            vec![("audio".into(), true), ("power".into(), true)]
+        );
+        t.join().unwrap();
+        // Never comes up: reported after the timeout.
+        let missing = wait_for_services(&["nope".to_string()], &dir, Duration::from_millis(100));
+        assert_eq!(missing, vec!["nope".to_string()]);
     }
 }
