@@ -179,6 +179,9 @@ const SURFACE_PROPS: &[PropSpec] = &[
     opt("margin", PropType::Sides),
     opt("exclusive", PropType::Number),
     opt("visible", PropType::Bool),
+    // "exclusive": take the keyboard while shown (launchers); by default a
+    // surface with an `Input` or `on_dismiss` gets it on demand.
+    opt("keyboard", PropType::Enum(&["on-demand", "exclusive"])),
     opt("on_dismiss", CLICK),
 ];
 

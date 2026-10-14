@@ -110,6 +110,9 @@ struct Placement {
     /// overlays included, stays out of the space other surfaces reserve.
     beside: bool,
     keyboard: bool,
+    /// Takes the keyboard while shown (`keyboard="exclusive"`: launchers,
+    /// lock screens), instead of on demand.
+    grab: bool,
 }
 
 impl Placement {
@@ -142,6 +145,7 @@ impl Placement {
             overlay: r.props.contains_key("on_dismiss"),
             beside: dev,
             keyboard: false,
+            grab: false,
         }
     }
 
@@ -160,6 +164,7 @@ impl Placement {
             overlay: false,
             beside: dev,
             keyboard: false,
+            grab: false,
         }
     }
 
@@ -177,6 +182,7 @@ impl Placement {
             overlay: true,
             beside: dev,
             keyboard: false,
+            grab: false,
         }
     }
 
@@ -221,7 +227,9 @@ impl Placement {
                     self.exclusive.map(px)
                 },
                 margin: Some((px(mt), px(mr), px(mb), px(ml))),
-                keyboard_interactivity: if self.keyboard {
+                keyboard_interactivity: if self.grab {
+                    KeyboardInteractivity::Exclusive
+                } else if self.keyboard {
                     KeyboardInteractivity::OnDemand
                 } else {
                     KeyboardInteractivity::None
@@ -374,6 +382,8 @@ impl Model {
             // A panel (it dismisses) may grow an `Input` while open, like a
             // password field; changing interactivity would reopen its window.
             placement.keyboard = placement.overlay || has_kind(tree, id, styled::INPUT);
+            placement.grab = root.props.get("keyboard").and_then(Value::as_str) == Some("exclusive");
+            placement.keyboard |= placement.grab;
             out.push((WindowKey::Surface(slot), placement));
             for popup in open_popups(tree, id) {
                 let mut p = Placement::popup(self.dev);
