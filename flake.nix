@@ -1,5 +1,5 @@
 {
-  description = "tessela — dev shell (Rust, Go, Python 3, GPUI runtime deps)";
+  description = "tessela — the runner (package, app, overlay) and its dev shell";
 
   inputs.nixpkgs.url = "flake:nixpkgs";
 
@@ -10,6 +10,24 @@
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      # `nix build`, `nix run . -- run <project>`; see nix/README.md.
+      packages = forAll (pkgs: rec {
+        tessela = pkgs.callPackage ./nix/package.nix { };
+        default = tessela;
+      });
+
+      apps = forAll (pkgs: {
+        default = {
+          type = "app";
+          program = nixpkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.tessela;
+          meta.description = "Run a tessela project";
+        };
+      });
+
+      overlays.default = final: _prev: {
+        tessela = final.callPackage ./nix/package.nix { };
+      };
+
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           name = "tessela";
