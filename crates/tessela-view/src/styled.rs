@@ -58,6 +58,9 @@ const VALUE_EVENT: PropType = PropType::Handler {
 const KEY_EVENT: PropType = PropType::Handler {
     payload: "{ key: string, value: string }",
 };
+const DRAG_END: PropType = PropType::Handler {
+    payload: "{ dropped: boolean }",
+};
 const ALIGN: PropType = PropType::Enum(&["start", "center", "end", "stretch"]);
 const JUSTIFY: PropType = PropType::Enum(&["start", "center", "end", "between"]);
 
@@ -86,6 +89,11 @@ const BOX_PROPS: &[PropSpec] = &[
     opt("on_right_click", CLICK),
     opt("on_middle_click", CLICK),
     opt("on_scroll", SCROLL),
+    // Files the box can be dragged out as, onto other applications
+    // (docs/adr/0023): pressing it and moving starts a drag offering them.
+    opt("drag", PropType::Paths),
+    opt("on_drag_start", CLICK),
+    opt("on_drag_end", DRAG_END),
 ];
 
 const LABEL_PROPS: &[PropSpec] = &[
@@ -370,6 +378,19 @@ pub fn place(v: &Value) -> Option<[Option<f32>; 4]> {
     Some([get("top")?, get("right")?, get("bottom")?, get("left")?])
 }
 
+/// The paths of a `drag` prop: one absolute path or a non-empty list of them.
+pub fn paths(v: &Value) -> Option<Vec<String>> {
+    let paths: Vec<String> = match v {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(a) => a
+            .iter()
+            .map(|p| p.as_str().map(str::to_owned))
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    (!paths.is_empty() && paths.iter().all(|p| p.starts_with('/'))).then_some(paths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +423,14 @@ mod tests {
             Some([Some(-1.0), None, None, Some(8.0)])
         );
         assert_eq!(place(&json!({"z": 1})), None);
+        assert_eq!(paths(&json!("/a b")), Some(vec!["/a b".to_string()]));
+        assert_eq!(
+            paths(&json!(["/a", "/b"])),
+            Some(vec!["/a".to_string(), "/b".to_string()])
+        );
+        assert_eq!(paths(&json!([])), None);
+        assert_eq!(paths(&json!(["relative"])), None);
+        assert_eq!(paths(&json!(["/a", 1])), None);
     }
 
     #[test]
@@ -430,7 +459,8 @@ mod tests {
         let tree = v
             .parse(json!({"type": "Surface", "anchor": "top", "children": [
                 {"type": "Box", "direction": "column", "gap": 4, "bg": "$surface", "radius": [1, 2, 3, 4],
-                 "place": {"top": 2}, "width": "50%", "on_right_click": 3, "children": [
+                 "place": {"top": 2}, "width": "50%", "on_right_click": 3,
+                 "drag": ["/tmp/a"], "on_drag_start": 5, "on_drag_end": 6, "children": [
                     {"type": "Label", "text": "hi", "color": "#fff", "weight": "bold"},
                     {"type": "Ring", "value": 0.5, "size": 32, "children": ["50"]},
                     {"type": "Slider", "value": 0.3, "width": "50%", "on_change": 4},
@@ -453,6 +483,7 @@ mod tests {
 
         let bad = |t| v.parse(t).unwrap_err().to_string();
         assert!(bad(json!({"type": "Box", "bg": "red"})).contains("color"));
+        assert!(bad(json!({"type": "Box", "drag": "a.txt"})).contains("path"));
         assert!(bad(json!({"type": "Box", "direction": "diagonal"})).contains("one of"));
         assert!(bad(json!({"type": "Slider"})).contains("value"));
         assert!(

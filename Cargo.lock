@@ -6766,6 +6766,7 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "futures",
+ "gpui-linux-gpui-unofficial",
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",
  "image",

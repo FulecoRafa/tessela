@@ -163,6 +163,8 @@ pub enum PropType {
     Radius,
     /// `{ top?, right?, bottom?, left? }` with numbers.
     Place,
+    /// An absolute path or a list of them (styled::paths).
+    Paths,
     /// One of a fixed set of strings.
     Enum(&'static [&'static str]),
     /// An event prop: a guest function or an action. `payload` documents what
@@ -184,6 +186,7 @@ impl PropType {
             PropType::Sides => styled::sides(v).is_some(),
             PropType::Radius => styled::radius(v).is_some(),
             PropType::Place => styled::place(v).is_some(),
+            PropType::Paths => styled::paths(v).is_some(),
             PropType::Enum(options) => v.as_str().is_some_and(|s| options.contains(&s)),
             PropType::Handler { .. } => Handler::from_value(v).is_some(),
         }
@@ -200,6 +203,7 @@ impl PropType {
             PropType::Sides => "number, [v, h] or [top, right, bottom, left]".into(),
             PropType::Radius => "number or [tl, tr, br, bl]".into(),
             PropType::Place => "{ top?, right?, bottom?, left? } of numbers".into(),
+            PropType::Paths => "absolute path or a list of them".into(),
             PropType::Enum(options) => format!("one of {}", options.join("|")),
             PropType::Handler { .. } => "function or action".into(),
         }

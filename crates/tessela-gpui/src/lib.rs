@@ -6,6 +6,7 @@
 //! ([`LayerBar`]); it needs a compositor with `zwlr_layer_shell_v1` (niri,
 //! sway, river, Hyprland, KWin, Wayfire, ...).
 
+mod drag;
 mod inspect;
 mod motion;
 mod shell;

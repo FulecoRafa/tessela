@@ -11,8 +11,12 @@
 //! that protocol. The space the project's other surfaces reserve (the bar)
 //! is cut out of such an overlay's input region: a click on the bar reaches
 //! the bar, which decides whether to switch panels or close them.
+//!
+//! A `Box drag` is dragged out to other applications (docs/adr/0023): while
+//! the drag lasts, its window lets the pointer through (an empty input
+//! region), so an overlay covering the output does not take the drop.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -37,6 +41,7 @@ use tessela_view::styled::{self, Length, STYLED};
 use tessela_view::text::{icon, short_error};
 use tessela_view::{CORE, ERROR, Handler, NodeId, Tone, ViewTree};
 
+use crate::drag::{self as drag_out, Press};
 use crate::inspect::{InspectCommand, InspectControl, Inspector, WindowInfo};
 use crate::motion::{self, Motion, Params};
 use crate::svg;
@@ -276,6 +281,11 @@ pub(crate) struct Model {
     motion: Rc<RefCell<HashMap<(usize, NodeId), Motion>>>,
     /// Input region last set on each overlay window, to set it only on change.
     regions: Rc<RefCell<HashMap<WindowKey, Vec<Bounds<Pixels>>>>>,
+    /// A press on a `Box drag` that may become a drag out.
+    press: Rc<RefCell<Option<Press>>>,
+    /// The window a drag out started from, while it lasts: its input region
+    /// is empty so the drop reaches what is below.
+    dragging: Rc<Cell<Option<WindowKey>>>,
     pub(crate) inspector: Option<Inspector>,
     inspect: Inspect,
     warned: RefCell<HashSet<String>>,
@@ -745,6 +755,22 @@ impl Draw<'_> {
             el = el.overflow_y_scroll();
         }
         el = self.events(el, r);
+        if let Some(paths) = r.props.get("drag").and_then(styled::paths) {
+            // The window turns the press into a drag once the pointer moves
+            // (`drag_probe`); a release before that is still a click.
+            let (press, ui) = (self.m.press.clone(), self.ui().clone());
+            let (start, end) = (p.handler("on_drag_start"), p.handler("on_drag_end"));
+            el = el.on_mouse_down(MouseButton::Left, move |e, window, _| {
+                *press.borrow_mut() = Some(Press {
+                    from: e.position,
+                    paths: paths.clone(),
+                    ui: ui.clone(),
+                    start: start.clone(),
+                    end: end.clone(),
+                });
+                window.refresh();
+            });
+        }
         el.children(self.children(r, window, cx)).into_any_element()
     }
 
@@ -1786,9 +1812,13 @@ fn draw_window(
                 // other surfaces reserve, so their clicks pass through.
                 let [rt, rr, rb, rl] = m.reserved(slot);
                 let regions = m.regions.clone();
+                let dragging = m.dragging.clone();
                 let region = canvas(
                     |_, _, _| {},
                     move |content, _, window, _| {
+                        if dragging.get() == Some(key) {
+                            return;
+                        }
                         let v = window.viewport_size();
                         let open = Bounds {
                             origin: point(px(rl), px(rt)),
@@ -1892,6 +1922,16 @@ fn draw_window(
                 .into_any_element()
         }
     };
+    let el = if m.press.borrow().is_some() {
+        div()
+            .size_full()
+            .relative()
+            .child(el)
+            .child(drag_probe(m, key, placement.overlay))
+            .into_any_element()
+    } else {
+        el
+    };
     let el = if m.inspect.active() {
         div()
             .size_full()
@@ -1906,6 +1946,97 @@ fn draw_window(
         i.rendered(slot, matches!(key, WindowKey::Popup(..)), started.elapsed());
     }
     el
+}
+
+/// While a `Box drag` is pressed: past the threshold, starts the drag out
+/// of this window; a release forgets the press.
+fn drag_probe(m: &Model, key: WindowKey, overlay: bool) -> impl IntoElement {
+    let (press, dragging, regions) = (m.press.clone(), m.dragging.clone(), m.regions.clone());
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, _| {
+            let (p1, p2) = (press.clone(), press.clone());
+            let (dragging, regions) = (dragging.clone(), regions.clone());
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                if !e.dragging() {
+                    // Released where this window did not see it.
+                    p1.borrow_mut().take();
+                    return;
+                }
+                let Some(p) = p1
+                    .borrow_mut()
+                    .take_if(|p| drag_out::far(p.from, e.position))
+                else {
+                    return;
+                };
+                begin_drag(p, key, overlay, &dragging, &regions, window, cx);
+            });
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, _| {
+                if phase == DispatchPhase::Bubble {
+                    p2.borrow_mut().take();
+                }
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// Starts a drag out of `window` and lets the pointer through it until the
+/// drag ends, so the drop lands on the window below and not on this one
+/// (an overlay covers the whole output). The surface stays mapped: unmapping
+/// it would not cancel the drag on wlroots or Hyprland either, but an empty
+/// input region keeps the drag independent of what the guest does with the
+/// surface (docs/adr/0023).
+fn begin_drag(
+    p: Press,
+    key: WindowKey,
+    overlay: bool,
+    dragging: &Rc<Cell<Option<WindowKey>>>,
+    regions: &Rc<RefCell<HashMap<WindowKey, Vec<Bounds<Pixels>>>>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let on_end = Box::new(move |dropped| {
+        let _ = tx.send(dropped);
+    });
+    if !drag_out::start(window, &p.paths, on_end) {
+        log::warn!("shell: cannot start a drag (no Wayland data device?)");
+        return;
+    }
+    dragging.set(Some(key));
+    regions.borrow_mut().remove(&key);
+    window.set_input_region(Some(&[]));
+    if let Some(h) = &p.start {
+        send(&p.ui, h, Value::Null);
+    }
+    let handle = window.window_handle();
+    let dragging = dragging.clone();
+    cx.spawn(async move |cx| {
+        let dropped = rx.await.unwrap_or(false);
+        if dragging.get() == Some(key) {
+            dragging.set(None);
+        }
+        // The guest may have hidden the surface meanwhile: nothing to restore.
+        let _ = handle.update(cx, |_, window, _| {
+            if overlay {
+                // Its canvas sets the region again on the next frame.
+                window.refresh();
+            } else {
+                window.set_input_region(None);
+            }
+        });
+        if let Some(h) = &p.end {
+            send(&p.ui, h, json!({ "dropped": dropped }));
+        }
+    })
+    .detach();
 }
 
 /// Opens, closes and reopens windows to match what the model wants.
@@ -2048,6 +2179,8 @@ impl Renderer for Shell {
                     drag: Rc::default(),
                     motion: Rc::default(),
                     regions: Rc::default(),
+                    press: Rc::default(),
+                    dragging: Rc::default(),
                     inspector,
                     inspect: Inspect::default(),
                     warned: RefCell::default(),

@@ -19,3 +19,6 @@ gpui.workspace = true
 gpui_platform.workspace = true
 resvg.workspace = true
 image.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux.workspace = true
