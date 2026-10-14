@@ -55,6 +55,9 @@ const TEXT_EVENT: PropType = PropType::Handler {
 const VALUE_EVENT: PropType = PropType::Handler {
     payload: "{ value: number }",
 };
+const KEY_EVENT: PropType = PropType::Handler {
+    payload: "{ key: string, value: string }",
+};
 const ALIGN: PropType = PropType::Enum(&["start", "center", "end", "stretch"]);
 const JUSTIFY: PropType = PropType::Enum(&["start", "center", "end", "between"]);
 
@@ -166,6 +169,10 @@ const INPUT_PROPS: &[PropSpec] = &[
     opt("secret", PropType::Bool),
     opt("on_change", TEXT_EVENT),
     opt("on_submit", TEXT_EVENT),
+    // Keys the field does not edit with: arrows, Tab, Escape, Page Up/Down,
+    // modified Enter and Ctrl/Alt/Super chords, as "up", "shift+tab",
+    // "ctrl+c". With it set, Escape no longer just unfocuses.
+    opt("on_key", KEY_EVENT),
 ];
 
 const SURFACE_PROPS: &[PropSpec] = &[

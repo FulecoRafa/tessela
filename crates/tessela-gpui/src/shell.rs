@@ -1155,7 +1155,7 @@ impl Draw<'_> {
             .color(&p.str("color").unwrap_or_else(|| "$text".into()));
         let muted = self.m.token_or("textFaint", 0x707a8c);
         let caret = self.m.token_or("yellow", 0xffcc66);
-        let (on_change, on_submit) = (p.handler("on_change"), p.handler("on_submit"));
+        let (on_change, on_submit, on_key) = (p.handler("on_change"), p.handler("on_submit"), p.handler("on_key"));
         let model = self.model.clone();
         let ui = self.ui().clone();
         let initial = p.str("value").unwrap_or_default();
@@ -1212,31 +1212,46 @@ impl Draw<'_> {
             .on_click(move |_, window, cx| window.focus(&f, cx))
             .on_key_down(move |e: &KeyDownEvent, window, cx| {
                 let ks = &e.keystroke;
+                let mods = &ks.modifiers;
+                let chord = mods.control || mods.platform || mods.alt;
                 let mut submit = None;
                 let mut changed = None;
+                let mut pressed = None;
+                // Ctrl+V (Super+V on macOS): one line of the clipboard.
+                let paste = (ks.key == "v" && (mods.control || mods.platform) && !mods.alt)
+                    .then(|| cx.read_from_clipboard().and_then(|c| c.text()))
+                    .flatten()
+                    .map(|t| t.lines().next().unwrap_or_default().to_string());
                 model.update(cx, |m, _| {
                     let Some(s) = m.inputs.get_mut(&key) else {
                         return;
                     };
+                    let before = s.text.clone();
                     match ks.key.as_str() {
+                        "v" if paste.is_some() => s.text.push_str(paste.as_deref().unwrap_or_default()),
+                        // Ctrl+Backspace, Alt+Backspace, Ctrl+W: the last word.
+                        "backspace" if chord => delete_word(&mut s.text),
+                        "w" if mods.control && !mods.alt && !mods.shift => delete_word(&mut s.text),
                         "backspace" => {
                             s.text.pop();
-                            changed = Some(s.text.clone());
-                            s.sent = s.text.clone();
                         }
-                        "enter" => submit = Some(s.text.clone()),
-                        "escape" => {}
-                        _ if ks.modifiers.control || ks.modifiers.platform || ks.modifiers.alt => {}
+                        "enter" if !chord && !mods.shift => submit = Some(s.text.clone()),
+                        "escape" | "up" | "down" | "tab" | "pageup" | "pagedown" | "enter" => {
+                            pressed = Some(key_name(ks))
+                        }
+                        _ if chord => pressed = Some(key_name(ks)),
                         _ => {
                             if let Some(ch) = &ks.key_char {
                                 s.text.push_str(ch);
-                                changed = Some(s.text.clone());
-                                s.sent = s.text.clone();
                             }
                         }
                     }
+                    if s.text != before {
+                        changed = Some(s.text.clone());
+                        s.sent = s.text.clone();
+                    }
                 });
-                if ks.key == "escape" {
+                if ks.key == "escape" && on_key.is_none() {
                     window.blur(cx);
                 }
                 if let (Some(v), Some(h)) = (changed, &on_change) {
@@ -1244,6 +1259,10 @@ impl Draw<'_> {
                 }
                 if let (Some(v), Some(h)) = (submit, &on_submit) {
                     send(&ui, h, json!({ "value": v }));
+                }
+                if let (Some(k), Some(h)) = (pressed, &on_key) {
+                    let value = model.read(cx).inputs.get(&key).map(|s| s.text.clone()).unwrap_or_default();
+                    send(&ui, h, json!({ "key": k, "value": value }));
                 }
                 cx.stop_propagation();
             })
@@ -2096,4 +2115,30 @@ impl Renderer for Shell {
             });
         Ok(())
     }
+}
+
+/// `ctrl+shift+tab`: modifiers in a fixed order, then the key.
+fn key_name(ks: &gpui::Keystroke) -> String {
+    let m = &ks.modifiers;
+    let mut out = String::new();
+    for (on, name) in [(m.control, "ctrl+"), (m.alt, "alt+"), (m.shift, "shift+"), (m.platform, "super+")] {
+        if on {
+            out.push_str(name);
+        }
+    }
+    out.push_str(&ks.key);
+    out
+}
+
+/// Drop trailing spaces, then the word before them.
+fn delete_word(text: &mut String) {
+    let trimmed = text.trim_end().len();
+    text.truncate(trimmed);
+    let cut = text
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace() || "/.-_:".contains(*c))
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    text.truncate(if cut == text.len() { cut.saturating_sub(1) } else { cut });
 }
