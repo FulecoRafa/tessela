@@ -56,3 +56,9 @@ Verified this way (Homebrew 2026-10, x86_64): `brew audit --strict` is
 clean, the build takes ~19 min on 3 CPUs and `brew test` passes. `brew
 linkage` lists `libx11` and `vulkan-loader` under "no linkage": expected,
 GPUI dlopen()s them, and the RUNPATH brew sets covers them (and wayland, mesa).
+That was before `sdk/rust` (tessela-service) joined the workspace; not
+rebuilt since. The formula should not need a change: the release tarball
+(`git archive`) contains `sdk/rust`, `cargo install --locked` of
+`apps/tessela` resolves against the workspace's `Cargo.lock` (which has the
+SDK's crates; `cargo metadata --locked` on the archive of the current
+HEAD succeeds) and only builds what the runner depends on.
