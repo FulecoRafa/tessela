@@ -36,7 +36,9 @@ docker run --rm --cpus=3 -v ~/rpmbuild:/root/rpmbuild -v "$PWD/packaging/rpm:/sp
   (`%cargo_vendor_manifest`, which turns into `Provides: bundled(crate(...))`).
 - `%check` runs `cargo test --workspace`. Every test is headless (the GPUI
   crate's tests build views without opening a window), so no compositor or
-  GPU is needed in the build root.
+  GPU is needed in the build root. The SDK's (`sdk/rust`) tests run too: they
+  need Unix sockets and `sh`, and the D-Bus one skips itself without a
+  session bus.
 - `apps/marathon` (the older example shell) is not packaged.
 
 ## Dependencies
