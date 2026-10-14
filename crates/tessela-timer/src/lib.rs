@@ -201,7 +201,11 @@ impl Module for Timers {
                 Ok(json!({ "id": key }))
             }
             "cancel" => {
-                let key = args["id"].as_u64().ok_or("missing id")?;
+                // Guests hand numbers back as floats (QuickJS gives `1.0`).
+                let key = args["id"]
+                    .as_u64()
+                    .or_else(|| args["id"].as_f64().filter(|f| *f >= 0.0 && f.fract() == 0.0).map(|f| f as u64))
+                    .ok_or("missing id")?;
                 let _ = self.tx.send(Cmd::Cancel(key));
                 cx.finish(key);
                 Ok(Value::Null)
