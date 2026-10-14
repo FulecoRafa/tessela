@@ -24,6 +24,20 @@ pub(crate) use wayland::*;
 #[cfg(feature = "x11")]
 pub(crate) use x11::*;
 
+// tessela patch: a drag out of a window, started by the caller (Wayland only).
+#[cfg(feature = "wayland")]
+pub use wayland::start_drag;
+
+/// tessela patch: without Wayland there is no drag to start.
+#[cfg(not(feature = "wayland"))]
+pub fn start_drag(
+    _window: &impl raw_window_handle::HasWindowHandle,
+    _offers: Vec<(String, Vec<u8>)>,
+    _on_end: Box<dyn FnOnce(bool)>,
+) -> bool {
+    false
+}
+
 use std::rc::Rc;
 
 /// Returns the default platform implementation for the current OS.

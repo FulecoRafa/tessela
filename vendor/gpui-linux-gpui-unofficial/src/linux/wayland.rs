@@ -10,6 +10,8 @@ mod window;
 pub mod layer_shell;
 
 pub(crate) use client::*;
+// tessela patch: see `client::start_drag`.
+pub use client::start_drag;
 
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 

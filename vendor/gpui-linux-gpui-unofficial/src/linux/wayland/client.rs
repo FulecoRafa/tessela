@@ -467,10 +467,91 @@ pub(crate) enum DataSourceKind {
     Drag,
 }
 
+// tessela patch: an outgoing drag offers any mime types (not only a file
+// list) and may come from `start_drag` below rather than from a GPUI drag
+// leaving the window. Such a drag has no GPUI window to tell
+// (`window: None`) and reports its end to `on_end` instead.
 pub(crate) struct ExternalDrag {
     source: wl_data_source::WlDataSource,
-    bytes: Vec<u8>,
-    window: WaylandWindowStatePtr,
+    offers: Vec<(String, Vec<u8>)>,
+    window: Option<WaylandWindowStatePtr>,
+    on_end: Option<Box<dyn FnOnce(bool)>>,
+}
+
+// tessela patch: the client of this thread, for `start_drag`.
+thread_local! {
+    static CLIENT: RefCell<Weak<RefCell<WaylandClientState>>> = RefCell::new(Weak::new());
+}
+
+/// tessela patch: starts a Wayland drag out of `window` with `offers`
+/// (mime type, bytes), copy only, from the press that is still held. The
+/// caller decides when the gesture is a drag (GPUI only hands a drag to the
+/// platform once the pointer leaves the window, which never happens on a
+/// surface covering the output). `on_end` gets whether a target took the
+/// drop, once the compositor ends the drag. Returns false, without calling
+/// `on_end`, when no drag started.
+pub fn start_drag(
+    window: &impl raw_window_handle::HasWindowHandle,
+    offers: Vec<(String, Vec<u8>)>,
+    on_end: Box<dyn FnOnce(bool)>,
+) -> bool {
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let raw_window_handle::RawWindowHandle::Wayland(handle) = handle.as_raw() else {
+        return false;
+    };
+    let Some(client) = CLIENT.with(|c| c.borrow().upgrade()) else {
+        return false;
+    };
+    let mut state = client.borrow_mut();
+    let wanted = handle.surface.as_ptr().cast::<std::ffi::c_void>();
+    let Some(surface) = state
+        .windows
+        .iter()
+        .find(|(id, _)| id.as_ptr().cast::<std::ffi::c_void>() == wanted)
+        .map(|(_, window)| window.surface())
+    else {
+        return false;
+    };
+    begin_drag(&mut state, &surface, offers, DndAction::Copy, None, Some(on_end))
+}
+
+/// tessela patch: what `start_external_drag` did, shared with `start_drag`.
+fn begin_drag(
+    state: &mut WaylandClientState,
+    surface: &wl_surface::WlSurface,
+    offers: Vec<(String, Vec<u8>)>,
+    actions: DndAction,
+    window: Option<WaylandWindowStatePtr>,
+    on_end: Option<Box<dyn FnOnce(bool)>>,
+) -> bool {
+    let (Some(data_device_manager), Some(data_device)) = (
+        state.globals.data_device_manager.as_ref(),
+        state.data_device.as_ref(),
+    ) else {
+        return false;
+    };
+    if offers.is_empty() {
+        return false;
+    }
+    let serial = state.serial_tracker.get(SerialKind::MousePress);
+    let source = data_device_manager.create_data_source(&state.globals.qh, DataSourceKind::Drag);
+    for (mime_type, _) in &offers {
+        source.offer(mime_type.clone());
+    }
+    source.set_actions(actions);
+    data_device.start_drag(Some(&source), surface, None, serial.as_raw());
+
+    // A drag still in flight (it cannot be, the pointer is held) is replaced;
+    // its source is cancelled by the compositor and ignored below.
+    state.external_drag = Some(ExternalDrag {
+        source,
+        offers,
+        window,
+        on_end,
+    });
+    true
 }
 
 fn file_uri_list(paths: &FileDragPaths) -> String {
@@ -587,32 +668,21 @@ impl WaylandClientStatePtr {
             return false;
         };
 
-        let (Some(data_device_manager), Some(data_device)) = (
-            state.globals.data_device_manager.as_ref(),
-            state.data_device.as_ref(),
-        ) else {
-            return false;
-        };
-
         let ExternalDragPayload::Files(paths) = payload;
         let uri_list = file_uri_list(paths);
         if uri_list.is_empty() {
             return false;
         }
 
-        let serial = state.serial_tracker.get(SerialKind::MousePress);
-        let source =
-            data_device_manager.create_data_source(&state.globals.qh, DataSourceKind::Drag);
-        source.offer(FILE_LIST_MIME_TYPE.to_string());
-        source.set_actions(DndAction::Copy | DndAction::Move);
-        data_device.start_drag(Some(&source), surface, None, serial.as_raw());
-
-        state.external_drag = Some(ExternalDrag {
-            source,
-            bytes: uri_list.into_bytes(),
-            window,
-        });
-        true
+        // tessela patch: shared with `start_drag`.
+        begin_drag(
+            &mut state,
+            surface,
+            vec![(FILE_LIST_MIME_TYPE.to_string(), uri_list.into_bytes())],
+            DndAction::Copy | DndAction::Move,
+            Some(window),
+            None,
+        )
     }
 
     pub fn set_pending_activation(&self, window: ObjectId) {
@@ -1064,6 +1134,9 @@ impl WaylandClient {
         WaylandSource::new(conn, event_queue)
             .insert(handle)
             .unwrap();
+
+        // tessela patch: for `start_drag`.
+        CLIENT.with(|c| *c.borrow_mut() = Rc::downgrade(&state));
 
         Self(state)
     }
@@ -2683,6 +2756,16 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                 id: data_offer,
             } => {
                 state.serial_tracker.update(SerialKind::DataDevice, serial);
+                // tessela patch: a `start_drag` drag passing over its own
+                // window (until the window lets the pointer through) is not
+                // a drop into it: leave the offer unaccepted.
+                if state
+                    .external_drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.window.is_none())
+                {
+                    return;
+                }
                 if let Some(data_offer) = data_offer {
                     let Some(drag_window) = get_window(&mut state, &surface.id()) else {
                         return;
@@ -2839,25 +2922,53 @@ impl Dispatch<wl_data_source::WlDataSource, DataSourceKind> for WaylandClientSta
             (DataSourceKind::Clipboard, wl_data_source::Event::Cancelled) => {
                 data_source.destroy();
             }
-            (DataSourceKind::Drag, wl_data_source::Event::Send { fd, .. }) => {
-                let Some(external_drag) = state.external_drag.as_ref() else {
+            // tessela patch: the bytes of the requested mime type; events of
+            // a source no longer current (replaced) are ignored.
+            (DataSourceKind::Drag, wl_data_source::Event::Send { mime_type, fd }) => {
+                let Some(external_drag) = state
+                    .external_drag
+                    .as_ref()
+                    .filter(|drag| drag.source == *data_source)
+                else {
                     return;
                 };
-                let bytes = external_drag.bytes.clone();
+                let Some((_, bytes)) = external_drag
+                    .offers
+                    .iter()
+                    .find(|(offered, _)| *offered == mime_type)
+                else {
+                    return;
+                };
+                let bytes = bytes.clone();
                 state.clipboard.send_bytes(fd, bytes);
             }
             (
                 DataSourceKind::Drag,
-                wl_data_source::Event::DndFinished | wl_data_source::Event::Cancelled,
+                event @ (wl_data_source::Event::DndFinished | wl_data_source::Event::Cancelled),
             ) => {
+                if !state
+                    .external_drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.source == *data_source)
+                {
+                    data_source.destroy();
+                    return;
+                }
                 let Some(external_drag) = state.external_drag.take() else {
                     return;
                 };
                 external_drag.source.destroy();
+                // Only a target that took the drop finishes it; `cancelled`
+                // may even follow `dnd_drop_performed` when it refuses.
+                let dropped = matches!(event, wl_data_source::Event::DndFinished);
 
-                let input = PlatformInput::FileDrop(FileDropEvent::Ended);
                 drop(state);
-                external_drag.window.handle_input(input);
+                if let Some(window) = external_drag.window {
+                    window.handle_input(PlatformInput::FileDrop(FileDropEvent::Ended));
+                }
+                if let Some(on_end) = external_drag.on_end {
+                    on_end(dropped);
+                }
             }
             _ => {}
         }
