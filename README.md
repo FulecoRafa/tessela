@@ -36,7 +36,7 @@ crates/
 apps/tessela       `tessela run` (projetos) e `tessela devtools` (terminal ou `ui`, gráfico)
 apps/marathon      a barra de exemplo
 vendor/            dependências com correções locais (ver vendor/README.md)
-sdk/{go,python}    helpers para escrever serviços
+sdk/{go,python,rust} helpers para escrever serviços (o Rust serve vários num processo)
 services/          serviços de exemplo (power em Go, sys em Python)
 widgets/           widgets da marathon (Luau e TSX)
 ```
@@ -69,6 +69,7 @@ o runner mantém vivos) e tokens de tema. Exemplo completo:
 ```sh
 nix develop                                     # Rust, Go, Python, libs do GPUI, sway, grim
 cargo build -p tessela-cli
+cargo build --release --manifest-path ../adwaita-shell/services/Cargo.toml   # os serviços da shell (um binário)
 ./target/debug/tessela run ../adwaita-shell --dev        # ao lado da barra do desktop
 ./target/debug/tessela run ../adwaita-shell --nested     # num sway headless próprio
 ./target/debug/tessela run ../adwaita-shell --devtools   # e em outro terminal:
@@ -76,7 +77,7 @@ cargo build -p tessela-cli
 ./target/debug/tessela devtools ui                      # o mesmo numa janela, como o DevTools do navegador
 ```
 
-Decisões: [ADR 0015](docs/adr/0015-projetos.md) a [0021](docs/adr/0021-movimento-no-renderer.md).
+Decisões: [ADR 0015](docs/adr/0015-projetos.md) a [0022](docs/adr/0022-sdk-rust-e-servicos-num-processo.md).
 
 ## Rodando a marathon
 
@@ -153,7 +154,10 @@ Um serviço é um Unix socket `<dir>/<nome>.sock` falando JSON por linha:
 ```
 
 `sdk/go/marathon` e `sdk/python/marathon_service.py` implementam isso em ~200
-linhas cada, sem dependências. Para testar na mão:
+linhas cada, sem dependências. `sdk/rust` (crate `tessela-service`) faz o mesmo
+em Rust e serve vários serviços num processo, um socket cada (exemplo:
+`cargo run -p tessela-service --example counter`; ver
+[ADR 0022](docs/adr/0022-sdk-rust-e-servicos-num-processo.md)). Para testar na mão:
 `socat - UNIX-CONNECT:run/services/power.sock`.
 
 ## Escrevendo um módulo

@@ -67,6 +67,13 @@ widget.toml + entry ──▶ Instance (engine + grafo) ──▶ Vocabulary ─
 | `Renderer` | host | aplicar patches, desenhar, devolver eventos; declarar o que desenha (`supports`) |
 | extension point | — | só `kind = "view"` por enquanto ([ADR 0006](adr/0006-pontos-de-extensao-sob-demanda.md)) |
 
+Serviços ficam fora do processo: qualquer programa que fale o protocolo de
+`tessela-proto` num Unix socket (o módulo `tessela-unix` é o cliente). `sdk/`
+tem helpers em Python, Go e Rust; o de Rust (`tessela-service`) serve vários
+serviços num processo, um socket cada, que é como um projeto entrega seus
+plugins num binário só, e o runner espera os sockets que um plugin declara
+([ADR 0022](adr/0022-sdk-rust-e-servicos-num-processo.md)).
+
 Escrever um módulo: implemente `Module` (nome, `invoke`, `release` e um
 prelúdio por linguagem que usa os helpers privados `__rt.invoke`, `__rt.wrap`
 e `__rt.define`). `tessela-unix` é o exemplo de referência.
