@@ -42,6 +42,9 @@ rustPlatform.buildRustPackage {
       ../Cargo.lock
       ../apps
       ../crates
+      # tessela-service (the Rust SDK): a workspace member, so cargo needs it
+      # even to build the runner alone; projects build their services on it.
+      ../sdk/rust
       # Local fixes to crates.io dependencies, wired in by [patch.crates-io].
       ../vendor
     ];
@@ -58,9 +61,10 @@ rustPlatform.buildRustPackage {
 
   buildInputs = runtimeLibs;
 
-  # The workspace's default members (core, engines, sandbox, modules, TUI)
-  # and the runner. They need no display: GPUI is only exercised by the
-  # runner's binary, never by a test.
+  # The workspace's default members (core, engines, sandbox, modules, TUI,
+  # the SDK) and the runner. They need no display: GPUI is only exercised by
+  # the runner's binary, never by a test. The SDK's D-Bus test skips itself
+  # without a session bus, as in the sandbox.
   cargoTestFlags = [ "--workspace" "--exclude" "marathon" ];
 
   # Prefer RUNPATH over a wrapper setting LD_LIBRARY_PATH: the runner starts

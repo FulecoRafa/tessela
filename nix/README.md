@@ -28,8 +28,12 @@ with `src` replaced by a `fetchFromGitHub` of a release.
   instead of linking them. They are added to the binary's RUNPATH (`patchelf
   --add-rpath`) rather than set in `LD_LIBRARY_PATH` by a wrapper, which would
   leak into the plugins and apps the runner starts.
-- The check phase runs the workspace's tests (all but `marathon`); none needs
-  a display.
+- `sdk/rust` (tessela-service, the Rust SDK) is in the source too: it is a
+  workspace member, and projects that build their services on it (e.g.
+  adwaita-shell) take it from this package's `src`.
+- The check phase runs the workspace's tests (all but `marathon`, SDK
+  included); none needs a display. The SDK's D-Bus test skips itself without
+  a session bus.
 - Not on the runtime closure, on purpose: `sway` (only for `--nested`) and
   `grim` (only for `tessela devtools shot`). Use the dev shell for those.
 
