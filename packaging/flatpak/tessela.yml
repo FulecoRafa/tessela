@@ -1,0 +1,29 @@
+# tessela (the runner, `tessela` from apps/tessela) as a flatpak-builder
+# module. io.github.fuleco.Tessela.yml builds it as an app; other apps that
+# bundle the runner include this file (adwaita-shell's manifest does).
+#
+# Needs the SDK extension org.freedesktop.Sdk.Extension.rust-stable in the
+# including manifest. Crates come from cargo-sources.json, regenerated with
+# flatpak-cargo-generator whenever Cargo.lock changes (see README.md).
+name: tessela
+buildsystem: simple
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/tessela/cargo
+    CARGO_NET_OFFLINE: 'true'
+build-commands:
+  - cargo build --offline --locked --release -j "${FLATPAK_BUILDER_N_JOBS}" -p tessela-cli
+  - install -Dm755 target/release/tessela -t /app/bin
+  - install -Dm644 LICENSE-MIT LICENSE-APACHE -t /app/share/licenses/tessela
+sources:
+  # The checkout this file is in. Build output and local state stay out.
+  - type: dir
+    path: ../..
+    skip:
+      - .git
+      - target
+      - run
+      - result
+      - .flatpak-builder
+  - cargo-sources.json

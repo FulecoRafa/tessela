@@ -1,0 +1,32 @@
+# tessela, the runner, as a Flatpak: `flatpak run io.github.fuleco.Tessela run <project dir>`.
+# See README.md for what the sandbox allows a project and what it breaks.
+id: io.github.fuleco.Tessela
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: tessela-flatpak
+finish-args:
+  # The compositor's own Wayland socket, not --socket=wayland (see
+  # tessela-flatpak.sh); another name needs --filesystem=xdg-run/<name>.
+  - --filesystem=xdg-run/wayland-0
+  - --filesystem=xdg-run/wayland-1
+  - --device=dri
+  - --share=ipc
+  # Projects live anywhere in the home directory; read them from there.
+  - --filesystem=home:ro
+  # The hyprland module: Hyprland's IPC sockets.
+  - --filesystem=xdg-run/hypr
+  # The tray module talks to the StatusNotifierWatcher and to every item.
+  - --socket=session-bus
+modules:
+  - tessela.yml
+
+  - name: tessela-flatpak
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 tessela-flatpak.sh /app/bin/tessela-flatpak
+    sources:
+      - type: file
+        path: tessela-flatpak.sh
