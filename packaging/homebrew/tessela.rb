@@ -16,13 +16,13 @@ class Tessela < Formula
   depends_on "rust" => :build
   depends_on "fontconfig"
   depends_on "freetype"
-  # Wayland layer-shell surfaces, prctl, Hyprland/D-Bus desktop modules: the
-  # runner does not build on macOS.
-  depends_on :linux
-  # GPUI dlopen()s these at runtime; Homebrew's RPATH points the loader at them.
+  # From here on, what GPUI dlopen()s at runtime (Homebrew's RPATH finds them).
   depends_on "libx11"
   depends_on "libxcb"
   depends_on "libxkbcommon"
+  # Wayland layer-shell surfaces, prctl, Hyprland/D-Bus desktop modules: the
+  # runner does not build on macOS.
+  depends_on :linux
   depends_on "mesa"
   depends_on "vulkan-loader"
   depends_on "wayland"

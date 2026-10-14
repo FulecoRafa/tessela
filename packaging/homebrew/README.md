@@ -51,3 +51,8 @@ docker run --rm --cpus=3 -v /tmp/brewtest:/src homebrew/brew bash -c '
   HOMEBREW_MAKE_JOBS=3 brew install --build-from-source local/test/tessela &&
   brew test local/test/tessela'
 ```
+
+Verified this way (Homebrew 2026-10, x86_64): `brew audit --strict` is
+clean, the build takes ~19 min on 3 CPUs and `brew test` passes. `brew
+linkage` lists `libx11` and `vulkan-loader` under "no linkage": expected,
+GPUI dlopen()s them, and the RUNPATH brew sets covers them (and wayland, mesa).
