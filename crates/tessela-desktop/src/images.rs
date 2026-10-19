@@ -23,16 +23,17 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "svg", "jpg", "jpeg", "gif", "webp", 
 
 /// Where modules write images they produce (tray pixmaps, menu icons).
 pub fn cache_dir() -> PathBuf {
-    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     PathBuf::from(runtime).join("tessela").join("images")
 }
 
-/// `$XDG_CACHE_HOME`, else `~/.cache`.
+/// `$XDG_CACHE_HOME`, else `~/.cache` (`~/Library/Caches` on macOS).
 fn user_cache_dir() -> Option<PathBuf> {
+    let home = if cfg!(target_os = "macos") { "Library/Caches" } else { ".cache" };
     std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(home)))
 }
 
 fn clean(p: &Path) -> bool {

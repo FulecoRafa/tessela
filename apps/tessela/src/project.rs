@@ -195,9 +195,10 @@ impl Project {
             .collect()
     }
 
-    /// `$XDG_RUNTIME_DIR/tessela/<name>`: sockets of this project's services.
+    /// `$XDG_RUNTIME_DIR/tessela/<name>` (else the temp dir, per user on
+    /// macOS): sockets of this project's services.
     pub fn runtime_dir(&self) -> PathBuf {
-        let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         PathBuf::from(runtime).join("tessela").join(&self.name)
     }
 

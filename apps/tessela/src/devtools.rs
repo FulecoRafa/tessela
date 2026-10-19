@@ -740,7 +740,7 @@ tessela devtools [--project NAME] <command>
   ui                            graphical devtools (a window of its own)";
 
 pub(crate) fn socket(project: Option<&str>) -> anyhow::Result<PathBuf> {
-    let runtime = PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))
         .join("tessela");
     if let Some(p) = project {
         return Ok(runtime.join(p).join("devtools.sock"));

@@ -193,7 +193,7 @@ fn main() -> anyhow::Result<()> {
 
     let services_dir = match &config.services_dir {
         Some(d) => resolve(&base, d),
-        None => PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
+        None => PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))
             .join("marathon/services"),
     };
     let services = UnixServices::with_registry(Registry {
