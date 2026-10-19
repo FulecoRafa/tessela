@@ -54,7 +54,10 @@ oxc = { version = "0.153", features = ["transformer", "codegen", "semantic"] }
 ratatui = "0.30"
 futures = "0.3"
 gpui = { package = "gpui-unofficial", version = "=1.23.2" }
-gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.23.2" }
+# macOS only (no-ops elsewhere): runtime_shaders compiles the Metal shaders
+# when the app starts, so building needs no Metal toolchain (a separate Xcode
+# download); font-kit is the text system, without which no text is drawn.
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.23.2", features = ["runtime_shaders", "font-kit"] }
 # the platform crate itself, for what GPUI does not expose (vendor/README.md)
 gpui_linux = { package = "gpui-linux-gpui-unofficial", version = "=1.23.2", default-features = false }
 # the versions GPUI already uses, to rasterize SVGs at the size they are drawn
