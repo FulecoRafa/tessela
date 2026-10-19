@@ -158,10 +158,7 @@ impl Host {
             listeners.push((path, UnixListener::try_from(l)?));
         }
         if self.exit_with_parent {
-            // SAFETY: plain prctl; no memory is touched.
-            unsafe {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-            }
+            exit_with_parent();
         }
         let mut signals = Signals::new([Signal::Term, Signal::Int])?;
 
@@ -199,5 +196,44 @@ impl Host {
         drop(ex);
         drop(bound);
         Ok(())
+    }
+}
+
+/// SIGTERM to this process when its parent dies, even by SIGKILL.
+#[cfg(target_os = "linux")]
+fn exit_with_parent() {
+    // SAFETY: plain prctl; no memory is touched.
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+    }
+}
+
+/// SIGTERM to this process when its parent dies, even by SIGKILL: a thread
+/// blocked in kqueue on the parent's exit (no wakeups until then).
+#[cfg(not(target_os = "linux"))]
+fn exit_with_parent() {
+    // SAFETY: getppid cannot fail.
+    let parent = unsafe { libc::getppid() };
+    let watch = move || {
+        // SAFETY: a fresh kqueue and one event on the stack, read back by kevent.
+        unsafe {
+            let kq = libc::kqueue();
+            if kq < 0 {
+                return;
+            }
+            let mut ev: libc::kevent = std::mem::zeroed();
+            ev.ident = parent as libc::uintptr_t;
+            ev.filter = libc::EVFILT_PROC;
+            ev.flags = libc::EV_ADD | libc::EV_ONESHOT;
+            ev.fflags = libc::NOTE_EXIT;
+            // Registering fails with ESRCH when the parent is already gone.
+            let gone = libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null()) < 0;
+            if gone || libc::kevent(kq, std::ptr::null(), 0, &mut ev, 1, std::ptr::null()) > 0 {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+        }
+    };
+    if parent > 1 {
+        let _ = std::thread::Builder::new().name("parent-watch".into()).spawn(watch);
     }
 }

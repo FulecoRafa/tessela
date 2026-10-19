@@ -47,7 +47,8 @@
 //! `$MARATHON_SERVICES_DIR` (both set by `tessela run` for a project's
 //! plugins), else `$XDG_RUNTIME_DIR/marathon/services`. See [`services_dir`].
 //!
-//! **Shutdown.** SIGTERM or SIGINT, the parent dying (`PR_SET_PDEATHSIG`) or
+//! **Shutdown.** SIGTERM or SIGINT, the parent dying (`PR_SET_PDEATHSIG`,
+//! kqueue on macOS) or
 //! [`Shutdown::stop`] end [`Host::run`]: every task is dropped (children
 //! started with [`process`] are killed) and the sockets are removed.
 
@@ -77,7 +78,7 @@ pub use wake::{Wake, poll};
 
 /// Where services put their sockets: `$TESSELA_SERVICES_DIR`, else
 /// `$MARATHON_SERVICES_DIR`, else `$XDG_RUNTIME_DIR/marathon/services`
-/// (`/tmp/marathon/services` without a runtime dir).
+/// (the temp dir without a runtime dir: per user on macOS).
 pub fn services_dir() -> PathBuf {
     for var in ["TESSELA_SERVICES_DIR", "MARATHON_SERVICES_DIR"] {
         if let Some(dir) = std::env::var_os(var).filter(|d| !d.is_empty()) {

@@ -1,13 +1,14 @@
 //! External commands: the data source of many services.
 //!
 //! Children started here are killed when their future is dropped (the
-//! service stopping, a timeout) and, through `PR_SET_PDEATHSIG`, when the
-//! service process dies. Spawn them from the host thread (any task started
+//! service stopping, a timeout) and, on Linux through `PR_SET_PDEATHSIG`,
+//! when the service process dies. Spawn them from the host thread (any task started
 //! with [`crate::spawn`]): the kernel ties the child to the thread that
 //! started it.
 
 use std::ffi::OsStr;
 use std::io;
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 use std::time::Duration;
@@ -22,7 +23,9 @@ pub use async_process::{Child, Command};
 pub fn command<S: AsRef<OsStr>>(argv: &[S]) -> Command {
     let mut std = std::process::Command::new(argv.first().map_or(OsStr::new(""), |s| s.as_ref()));
     std.args(argv.iter().skip(1));
+    // Linux only: elsewhere the child outlives a service killed by SIGKILL.
     // SAFETY: prctl is async-signal-safe; nothing else runs before exec.
+    #[cfg(target_os = "linux")]
     unsafe {
         std.pre_exec(|| {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);

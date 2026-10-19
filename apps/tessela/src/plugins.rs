@@ -66,7 +66,9 @@ fn spawn(name: &str, cfg: &PluginConfig, root: &Path, services: &Path) -> std::i
         .stderr(Stdio::piped())
         .process_group(0);
     // If the runner dies, even by SIGKILL, the kernel stops the plugin too.
+    // Elsewhere a plugin on the Rust SDK watches its parent itself.
     // SAFETY: prctl is async-signal-safe; nothing else runs before exec.
+    #[cfg(target_os = "linux")]
     unsafe {
         cmd.pre_exec(|| {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);

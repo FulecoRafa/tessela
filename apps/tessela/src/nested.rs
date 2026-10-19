@@ -5,6 +5,7 @@
 //! (Hyprland, the tray, the portal). `tessela devtools shot` captures from it.
 //! Useful when the screen is off or locked, and for previews in general.
 
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -39,6 +40,10 @@ fn sockets_since(runtime: &Path, since: std::time::SystemTime) -> Vec<String> {
 
 /// `spec`: `WIDTHxHEIGHT@SCALE`, e.g. `1920x1080@1.25`.
 pub fn start(dir: &Path, spec: &str) -> anyhow::Result<Nested> {
+    anyhow::ensure!(
+        cfg!(target_os = "linux"),
+        "--nested needs Linux: it runs a headless sway"
+    );
     let (mode, scale) = spec.split_once('@').unwrap_or((spec, "1"));
     anyhow::ensure!(
         mode.split_once('x')
@@ -72,6 +77,7 @@ pub fn start(dir: &Path, spec: &str) -> anyhow::Result<Nested> {
         cmd.env("WLR_RENDER_DRM_DEVICE", "/dev/dri/renderD128");
     }
     // SAFETY: prctl is async-signal-safe; nothing else runs before exec.
+    #[cfg(target_os = "linux")]
     unsafe {
         cmd.pre_exec(|| {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
