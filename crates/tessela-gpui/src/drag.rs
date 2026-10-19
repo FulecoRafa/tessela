@@ -28,6 +28,7 @@ pub(crate) fn far(from: Point<Pixels>, to: Point<Pixels>) -> bool {
 
 /// `file://` URI of an absolute path, percent-encoding all but unreserved
 /// characters and `/` (RFC 8089, as file managers write them).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn file_uri(path: &str) -> String {
     let mut uri = String::from("file://");
     for b in path.bytes() {
@@ -43,6 +44,7 @@ pub(crate) fn file_uri(path: &str) -> String {
 /// What a drag of `paths` offers: `text/uri-list` (CRLF-terminated file
 /// URIs, for file managers, browsers, chat apps) and `text/plain` (the
 /// paths, one per line, for terminals and text fields).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn offers(paths: &[String]) -> Vec<(String, Vec<u8>)> {
     let uris: String = paths.iter().map(|p| file_uri(p) + "\r\n").collect();
     vec![

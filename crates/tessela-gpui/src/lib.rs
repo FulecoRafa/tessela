@@ -8,6 +8,8 @@
 
 mod drag;
 mod inspect;
+#[cfg(not(target_os = "linux"))]
+mod layer;
 mod motion;
 mod shell;
 mod svg;
@@ -19,12 +21,15 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
+#[cfg(target_os = "linux")]
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
+#[cfg(target_os = "linux")]
+use gpui::{Bounds, Size, point};
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, ElementId, FontWeight, Hsla, IntoElement, MouseButton,
-    ParentElement, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Size, Stateful,
-    Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div,
-    point, prelude::*, px, rgb,
+    AnyElement, App, Context, Div, ElementId, FontWeight, Hsla, IntoElement, MouseButton,
+    ParentElement, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Styled,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, prelude::*,
+    px, rgb,
 };
 use serde_json::Value;
 use tessela_host::{Frame, Renderer, Slot, Surface, Trees, UiEvent};
@@ -411,7 +416,10 @@ impl Renderer for LayerBar {
             height,
             title,
         } = self;
+        #[cfg(not(target_os = "linux"))]
+        let _ = namespace;
         gpui_platform::application().run(move |cx: &mut App| {
+            #[cfg(target_os = "linux")]
             let options = WindowOptions {
                 titlebar: None,
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -432,6 +440,26 @@ impl Renderer for LayerBar {
                     ..Default::default()
                 }),
                 ..Default::default()
+            };
+            // No layer-shell: a panel along the display's top (or bottom) edge.
+            #[cfg(not(target_os = "linux"))]
+            let options = {
+                let display = cx
+                    .primary_display()
+                    .map(|d| d.bounds().size)
+                    .unwrap_or_default();
+                let anchors = [!dev, true, dev, true];
+                WindowOptions {
+                    titlebar: None,
+                    window_bounds: Some(WindowBounds::Windowed(layer::frame(
+                        display, anchors, 0.0, height, [0.0; 4],
+                    ))),
+                    app_id: Some(app_id.clone()),
+                    window_background: WindowBackgroundAppearance::Opaque,
+                    kind: WindowKind::PopUp,
+                    is_movable: false,
+                    ..Default::default()
+                }
             };
             let (title, slots) = (title.clone(), slots.clone());
             if let Err(e) = cx.open_window(options, |_, cx| {

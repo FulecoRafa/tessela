@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
+#[cfg(target_os = "linux")]
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
     AnyElement, App, AppContext, AsyncApp, Bounds, Context, DispatchPhase, Div, ElementId, Entity,
@@ -43,6 +44,8 @@ use tessela_view::{CORE, ERROR, Handler, NodeId, Tone, ViewTree};
 
 use crate::drag::{self as drag_out, Press};
 use crate::inspect::{InspectCommand, InspectControl, Inspector, WindowInfo};
+#[cfg(not(target_os = "linux"))]
+use crate::layer::{self, Layer};
 use crate::motion::{self, Motion, Params};
 use crate::svg;
 
@@ -191,7 +194,10 @@ impl Placement {
         }
     }
 
-    fn options(&self, app_id: &str, namespace: String) -> WindowOptions {
+    /// `display`: the size of the output the window opens on (unused here:
+    /// the compositor places layer surfaces).
+    #[cfg(target_os = "linux")]
+    fn options(&self, app_id: &str, namespace: String, _display: Size<Pixels>) -> WindowOptions {
         let mut anchor = Anchor::empty();
         let (top, bottom, left, right) = if self.overlay {
             (true, true, true, true)
@@ -241,6 +247,30 @@ impl Placement {
                 },
                 ..Default::default()
             }),
+            focus: self.keyboard,
+            ..Default::default()
+        }
+    }
+
+    /// `display`: the size of the display the window opens on, where the
+    /// window is placed as layer-shell would place it (see `layer`).
+    #[cfg(not(target_os = "linux"))]
+    fn options(&self, app_id: &str, _namespace: String, display: Size<Pixels>) -> WindowOptions {
+        let bounds = if self.overlay {
+            layer::frame(display, [true; 4], 0.0, 0.0, [0.0; 4])
+        } else {
+            let anchors = [self.top, self.right, self.bottom, self.left];
+            layer::frame(display, anchors, self.width, self.height, self.margin)
+        };
+        WindowOptions {
+            titlebar: None,
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            app_id: Some(app_id.to_string()),
+            window_background: WindowBackgroundAppearance::Transparent,
+            kind: WindowKind::PopUp,
+            is_movable: false,
+            is_resizable: false,
+            is_minimizable: false,
             focus: self.keyboard,
             ..Default::default()
         }
@@ -2077,9 +2107,13 @@ impl Windows {
                 WindowKey::Popup(s, n) => (s, format!("-popup{n}")),
             };
             let namespace = format!("{}-{}{suffix}", self.app_id, names[slot]);
-            let options = placement.options(&self.app_id, namespace.clone());
             let (m, p) = (model.clone(), placement.clone());
             match cx.update(|cx| {
+                let display = cx
+                    .primary_display()
+                    .map(|d| d.bounds().size)
+                    .unwrap_or_default();
+                let options = placement.options(&self.app_id, namespace.clone(), display);
                 cx.open_window(options, |_, cx| {
                     cx.new(|cx| SurfaceView::new(m, key, p, cx))
                 })
